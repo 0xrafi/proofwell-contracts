@@ -26,11 +26,7 @@ contract ProofwellStaking is ReentrancyGuard {
 
     // ============ Events ============
     event Staked(
-        address indexed user,
-        uint256 amount,
-        uint256 goalSeconds,
-        uint256 durationDays,
-        uint256 startTimestamp
+        address indexed user, uint256 amount, uint256 goalSeconds, uint256 durationDays, uint256 startTimestamp
     );
     event DayProofSubmitted(address indexed user, uint256 dayIndex, bool goalAchieved);
     event Claimed(address indexed user, uint256 amountReturned, uint256 amountSlashed);
@@ -73,12 +69,11 @@ contract ProofwellStaking is ReentrancyGuard {
     /// @param durationDays Number of days for the challenge
     /// @param pubKeyX P-256 public key X coordinate (App Attest)
     /// @param pubKeyY P-256 public key Y coordinate (App Attest)
-    function stake(
-        uint256 goalSeconds,
-        uint256 durationDays,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) external payable nonReentrant {
+    function stake(uint256 goalSeconds, uint256 durationDays, bytes32 pubKeyX, bytes32 pubKeyY)
+        external
+        payable
+        nonReentrant
+    {
         if (stakes[msg.sender].amount != 0) revert StakeAlreadyExists();
         if (goalSeconds == 0 || goalSeconds > MAX_GOAL_SECONDS) revert InvalidGoal();
         if (durationDays == 0 || durationDays > MAX_DURATION_DAYS) revert InvalidDuration();
@@ -114,12 +109,7 @@ contract ProofwellStaking is ReentrancyGuard {
     /// @param goalAchieved Whether the goal was achieved that day
     /// @param r Signature r value
     /// @param s Signature s value
-    function submitDayProof(
-        uint256 dayIndex,
-        bool goalAchieved,
-        bytes32 r,
-        bytes32 s
-    ) external nonReentrant {
+    function submitDayProof(uint256 dayIndex, bool goalAchieved, bytes32 r, bytes32 s) external nonReentrant {
         Stake storage userStake = stakes[msg.sender];
         if (userStake.amount == 0) revert NoStakeFound();
         if (userStake.claimed) revert StakeAlreadyClaimed();
@@ -134,24 +124,11 @@ contract ProofwellStaking is ReentrancyGuard {
         if (block.timestamp > windowEnd) revert ProofSubmissionWindowClosed();
 
         // Construct the message hash
-        bytes32 messageHash = keccak256(
-            abi.encodePacked(
-                msg.sender,
-                dayIndex,
-                goalAchieved,
-                block.chainid,
-                address(this)
-            )
-        );
+        bytes32 messageHash =
+            keccak256(abi.encodePacked(msg.sender, dayIndex, goalAchieved, block.chainid, address(this)));
 
         // Verify P-256 signature using RIP-7212 precompile with fallback
-        bool valid = P256.verify(
-            messageHash,
-            r,
-            s,
-            userStake.pubKeyX,
-            userStake.pubKeyY
-        );
+        bool valid = P256.verify(messageHash, r, s, userStake.pubKeyX, userStake.pubKeyY);
         if (!valid) revert InvalidSignature();
 
         // Mark day as verified
@@ -186,12 +163,12 @@ contract ProofwellStaking is ReentrancyGuard {
 
         // Transfer funds
         if (amountReturned > 0) {
-            (bool successUser, ) = msg.sender.call{value: amountReturned}("");
+            (bool successUser,) = msg.sender.call{value: amountReturned}("");
             require(successUser, "Transfer to user failed");
         }
 
         if (amountSlashed > 0) {
-            (bool successProtocol, ) = protocolTreasury.call{value: amountSlashed}("");
+            (bool successProtocol,) = protocolTreasury.call{value: amountSlashed}("");
             require(successProtocol, "Transfer to protocol failed");
         }
 
@@ -212,7 +189,11 @@ contract ProofwellStaking is ReentrancyGuard {
     /// @param dayIndex The day index
     /// @return canSubmit Whether proof can be submitted
     /// @return reason Human readable reason if cannot submit
-    function canSubmitProof(address user, uint256 dayIndex) external view returns (bool canSubmit, string memory reason) {
+    function canSubmitProof(address user, uint256 dayIndex)
+        external
+        view
+        returns (bool canSubmit, string memory reason)
+    {
         Stake storage userStake = stakes[user];
 
         if (userStake.amount == 0) {
