@@ -1,66 +1,47 @@
-## Foundry
+# Proofwell Contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+Smart contracts for Proofwell - stake ETH on your screen time goals with cryptographic proof verification.
 
-Foundry consists of:
+## Deployed Contracts
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+| Network | Address |
+|---------|---------|
+| Base Sepolia | `0x0c3FAE9B28faE66B0e668774eA3909B42729e4B6` |
 
-## Documentation
+## Overview
 
-https://book.getfoundry.sh/
+ProofwellStaking allows users to:
+- Stake ETH with a screen time goal and duration
+- Submit daily P-256 signed proofs from iOS App Attest
+- Claim proportional returns based on successful days
 
-## Usage
+### Key Features
+
+- **P-256 Signature Verification**: Uses RIP-7212 precompile with OpenZeppelin fallback
+- **Sybil Prevention**: One App Attest key per wallet
+- **Proportional Returns**: `(stake * successfulDays) / totalDays`
+- **Time Windows**: 6-hour grace period for daily proof submission
+
+## Development
 
 ### Build
 
 ```shell
-$ forge build
+forge build
 ```
 
 ### Test
 
 ```shell
-$ forge test
-```
-
-### Format
-
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
+forge test
 ```
 
 ### Deploy
 
 ```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
+source .env && forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast
 ```
 
-### Cast
+## License
 
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+MIT
