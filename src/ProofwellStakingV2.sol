@@ -1,17 +1,26 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {P256} from "@openzeppelin/contracts/utils/cryptography/P256.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {Ownable2StepUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 
 /// @title ProofwellStakingV2
 /// @notice Stake ETH or USDC on screen time goals with tiered reward distribution
 /// @dev V2 adds: USDC support, pause/admin functions, winner redistribution, charity donations
-contract ProofwellStakingV2 is ReentrancyGuard, Ownable2Step, Pausable {
+/// @custom:oz-upgrades
+contract ProofwellStakingV2 is
+    Initializable,
+    ReentrancyGuard,
+    Ownable2StepUpgradeable,
+    PausableUpgradeable,
+    UUPSUpgradeable
+{
     using SafeERC20 for IERC20;
 
     // ============ Errors ============
@@ -89,14 +98,14 @@ contract ProofwellStakingV2 is ReentrancyGuard, Ownable2Step, Pausable {
     mapping(address => mapping(uint256 => bool)) public dayVerified;
 
     // Distribution percentages (must sum to 100)
-    uint8 public winnerPercent = 40;
-    uint8 public treasuryPercent = 40;
-    uint8 public charityPercent = 20;
+    uint8 public winnerPercent;
+    uint8 public treasuryPercent;
+    uint8 public charityPercent;
 
     // Addresses
     address public treasury;
     address public charity;
-    IERC20 public immutable usdc;
+    IERC20 public usdc;
 
     // Cohort tracking for winner redistribution
     mapping(uint256 => uint256) public cohortPoolETH; // weekNum => accumulated winner pool
@@ -106,13 +115,32 @@ contract ProofwellStakingV2 is ReentrancyGuard, Ownable2Step, Pausable {
     mapping(uint256 => bool) public cohortFinalized; // weekNum => all claims processed
 
     // ============ Constructor ============
-    constructor(address _treasury, address _charity, address _usdc) Ownable(msg.sender) {
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    // ============ Initializer ============
+    /// @notice Initialize the contract (replaces constructor for proxy pattern)
+    /// @param _treasury Address to receive treasury funds
+    /// @param _charity Address to receive charity donations
+    /// @param _usdc USDC token address
+    function initialize(address _treasury, address _charity, address _usdc) public initializer {
         if (_treasury == address(0) || _charity == address(0) || _usdc == address(0)) {
             revert ZeroAddress();
         }
+
+        __Ownable_init(msg.sender);
+        __Pausable_init();
+
         treasury = _treasury;
         charity = _charity;
         usdc = IERC20(_usdc);
+
+        // Set default distribution percentages
+        winnerPercent = 40;
+        treasuryPercent = 40;
+        charityPercent = 20;
     }
 
     // ============ Admin Functions ============
@@ -506,4 +534,14 @@ contract ProofwellStakingV2 is ReentrancyGuard, Ownable2Step, Pausable {
     function getCurrentWeek() external view returns (uint256) {
         return block.timestamp / SECONDS_PER_WEEK;
     }
+
+    /// @notice Get contract version
+    function version() external pure returns (string memory) {
+        return "2.0.0";
+    }
+
+    // ============ UUPS ============
+
+    /// @notice Authorize upgrade to new implementation (owner only)
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 }

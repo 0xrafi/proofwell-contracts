@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Script, console} from "forge-std/Script.sol";
 import {ProofwellStakingV2} from "../src/ProofwellStakingV2.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 contract DeployV2Script is Script {
     // Base Sepolia USDC address
@@ -15,20 +16,33 @@ contract DeployV2Script is Script {
         // Use deployer as treasury and charity for testnet (can be updated later)
         address treasury = deployer;
         address charity = deployer;
-        address usdc = BASE_SEPOLIA_USDC;
 
         console.log("Deployer:", deployer);
         console.log("Treasury:", treasury);
         console.log("Charity:", charity);
-        console.log("USDC:", usdc);
+        console.log("USDC:", BASE_SEPOLIA_USDC);
 
         vm.startBroadcast(deployerPrivateKey);
 
-        ProofwellStakingV2 staking = new ProofwellStakingV2(treasury, charity, usdc);
+        // 1. Deploy implementation
+        ProofwellStakingV2 implementation = new ProofwellStakingV2();
+        console.log("Implementation deployed to:", address(implementation));
+
+        // 2. Deploy proxy with initialization
+        bytes memory initData = abi.encodeCall(ProofwellStakingV2.initialize, (treasury, charity, BASE_SEPOLIA_USDC));
+        ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), initData);
+        console.log("Proxy deployed to:", address(proxy));
 
         vm.stopBroadcast();
 
-        console.log("ProofwellStakingV2 deployed to:", address(staking));
+        // Verify deployment via proxy
+        ProofwellStakingV2 staking = ProofwellStakingV2(address(proxy));
+        console.log("");
+        console.log("Verification:");
+        console.log("  Version:", staking.version());
+        console.log("  Owner:", staking.owner());
+        console.log("  Treasury:", staking.treasury());
+        console.log("  Charity:", staking.charity());
         console.log("");
         console.log("Distribution:");
         console.log("  Winners:", staking.winnerPercent(), "%");

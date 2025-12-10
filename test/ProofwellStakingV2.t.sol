@@ -5,6 +5,7 @@ import {Test, console} from "forge-std/Test.sol";
 import {ProofwellStakingV2} from "../src/ProofwellStakingV2.sol";
 import {P256} from "@openzeppelin/contracts/utils/cryptography/P256.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @notice Mock USDC token for testing
 contract MockUSDC is ERC20 {
@@ -49,7 +50,11 @@ contract ProofwellStakingV2Test is Test {
         user2 = makeAddr("user2");
 
         usdc = new MockUSDC();
-        staking = new ProofwellStakingV2(treasury, charity, address(usdc));
+
+        // Deploy via proxy
+        ProofwellStakingV2 implementation = new ProofwellStakingV2();
+        bytes memory initData = abi.encodeCall(ProofwellStakingV2.initialize, (treasury, charity, address(usdc)));
+        staking = ProofwellStakingV2(address(new ERC1967Proxy(address(implementation), initData)));
 
         vm.deal(user1, 10 ether);
         vm.deal(user2, 10 ether);
@@ -60,9 +65,9 @@ contract ProofwellStakingV2Test is Test {
     // Allow test contract to receive ETH (for emergencyWithdraw test)
     receive() external payable {}
 
-    // ============ Constructor Tests ============
+    // ============ Initialization Tests ============
 
-    function test_Constructor_Success() public view {
+    function test_Initialize_Success() public view {
         assertEq(staking.treasury(), treasury);
         assertEq(staking.charity(), charity);
         assertEq(address(staking.usdc()), address(usdc));
@@ -70,21 +75,39 @@ contract ProofwellStakingV2Test is Test {
         assertEq(staking.treasuryPercent(), 40);
         assertEq(staking.charityPercent(), 20);
         assertEq(staking.owner(), owner);
+        assertEq(staking.version(), "2.0.0");
     }
 
-    function test_Constructor_RevertIf_ZeroTreasury() public {
+    function test_Initialize_RevertIf_ZeroTreasury() public {
+        ProofwellStakingV2 impl = new ProofwellStakingV2();
+        bytes memory initData = abi.encodeCall(ProofwellStakingV2.initialize, (address(0), charity, address(usdc)));
         vm.expectRevert(ProofwellStakingV2.ZeroAddress.selector);
-        new ProofwellStakingV2(address(0), charity, address(usdc));
+        new ERC1967Proxy(address(impl), initData);
     }
 
-    function test_Constructor_RevertIf_ZeroCharity() public {
+    function test_Initialize_RevertIf_ZeroCharity() public {
+        ProofwellStakingV2 impl = new ProofwellStakingV2();
+        bytes memory initData = abi.encodeCall(ProofwellStakingV2.initialize, (treasury, address(0), address(usdc)));
         vm.expectRevert(ProofwellStakingV2.ZeroAddress.selector);
-        new ProofwellStakingV2(treasury, address(0), address(usdc));
+        new ERC1967Proxy(address(impl), initData);
     }
 
-    function test_Constructor_RevertIf_ZeroUSDC() public {
+    function test_Initialize_RevertIf_ZeroUSDC() public {
+        ProofwellStakingV2 impl = new ProofwellStakingV2();
+        bytes memory initData = abi.encodeCall(ProofwellStakingV2.initialize, (treasury, charity, address(0)));
         vm.expectRevert(ProofwellStakingV2.ZeroAddress.selector);
-        new ProofwellStakingV2(treasury, charity, address(0));
+        new ERC1967Proxy(address(impl), initData);
+    }
+
+    function test_CannotInitializeTwice() public {
+        vm.expectRevert();
+        staking.initialize(treasury, charity, address(usdc));
+    }
+
+    function test_ImplementationCannotBeInitialized() public {
+        ProofwellStakingV2 impl = new ProofwellStakingV2();
+        vm.expectRevert();
+        impl.initialize(treasury, charity, address(usdc));
     }
 
     // ============ ETH Staking Tests ============
@@ -300,12 +323,12 @@ contract ProofwellStakingV2Test is Test {
     // ============ Claim with Distribution Tests ============
 
     /// @dev Helper to set successful days via storage
-    /// @notice Stakes mapping is at slot 2 per forge inspect storage-layout
+    /// @notice With UUPS pattern using ERC-7201 namespaced storage, stakes mapping is at slot 0
     function _setSuccessfulDays(address user, uint256 days_) internal {
-        // Slot 0: Ownable._owner
-        // Slot 1: Ownable2Step._pendingOwner (20 bytes) + Pausable._paused (1 byte) packed
-        // Slot 2: stakes mapping
-        bytes32 stakeSlot = keccak256(abi.encode(user, uint256(2)));
+        // Slot 0: stakes mapping (ERC-7201 namespaced storage puts our state first)
+        bytes32 stakeSlot = keccak256(abi.encode(user, uint256(0)));
+        // Stake struct: amount(0), goalSeconds(1), startTimestamp(2), durationDays(3),
+        //               pubKeyX(4), pubKeyY(5), successfulDays(6), claimed+isUSDC(7), cohortWeek(8)
         bytes32 successfulDaysSlot = bytes32(uint256(stakeSlot) + 6);
         vm.store(address(staking), successfulDaysSlot, bytes32(days_));
     }
@@ -598,6 +621,41 @@ contract ProofwellStakingV2Test is Test {
         assertEq(staking.owner(), newOwner);
     }
 
+    // ============ UUPS Upgrade Tests ============
+
+    function test_UpgradeToNewImplementation() public {
+        // Create a stake first to test state preservation
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        // Deploy new implementation
+        ProofwellStakingV2 newImpl = new ProofwellStakingV2();
+
+        // Upgrade (only owner can)
+        staking.upgradeToAndCall(address(newImpl), "");
+
+        // Verify state preserved
+        assertEq(staking.treasury(), treasury);
+        assertEq(staking.charity(), charity);
+        assertEq(staking.owner(), owner);
+
+        // Verify stake still exists
+        ProofwellStakingV2.Stake memory userStake = staking.getStake(user1);
+        assertEq(userStake.amount, 1 ether);
+    }
+
+    function test_UpgradeRevertIf_NotOwner() public {
+        ProofwellStakingV2 newImpl = new ProofwellStakingV2();
+
+        vm.prank(user1);
+        vm.expectRevert();
+        staking.upgradeToAndCall(address(newImpl), "");
+    }
+
+    function test_Version() public view {
+        assertEq(staking.version(), "2.0.0");
+    }
+
     // ============ Constants Tests ============
 
     function test_Constants() public view {
@@ -669,16 +727,20 @@ contract ProofwellStakingV2IntegrationTest is Test {
         charity = makeAddr("charity");
 
         usdc = new MockUSDC();
-        staking = new ProofwellStakingV2(treasury, charity, address(usdc));
+
+        // Deploy via proxy
+        ProofwellStakingV2 implementation = new ProofwellStakingV2();
+        bytes memory initData = abi.encodeCall(ProofwellStakingV2.initialize, (treasury, charity, address(usdc)));
+        staking = ProofwellStakingV2(address(new ERC1967Proxy(address(implementation), initData)));
     }
 
     /// @dev Helper to set successful days via storage
-    /// @notice Stakes mapping is at slot 2 per forge inspect storage-layout
+    /// @notice With UUPS pattern using ERC-7201 namespaced storage, stakes mapping is at slot 0
     function _setSuccessfulDays(address user, uint256 days_) internal {
-        // Slot 0: Ownable._owner
-        // Slot 1: Ownable2Step._pendingOwner (20 bytes) + Pausable._paused (1 byte) packed
-        // Slot 2: stakes mapping
-        bytes32 stakeSlot = keccak256(abi.encode(user, uint256(2)));
+        // Slot 0: stakes mapping (ERC-7201 namespaced storage puts our state first)
+        bytes32 stakeSlot = keccak256(abi.encode(user, uint256(0)));
+        // Stake struct: amount(0), goalSeconds(1), startTimestamp(2), durationDays(3),
+        //               pubKeyX(4), pubKeyY(5), successfulDays(6), claimed+isUSDC(7), cohortWeek(8)
         bytes32 successfulDaysSlot = bytes32(uint256(stakeSlot) + 6);
         vm.store(address(staking), successfulDaysSlot, bytes32(days_));
     }
@@ -851,9 +913,9 @@ contract ProofwellStakingV2IntegrationTest is Test {
         vm.stopPrank();
         console.log("Gas for stakeUSDC:", stakeUSDCGas);
 
-        // Verify reasonable gas usage (V2 has more logic than V1)
-        assertLt(stakeETHGas, 250_000, "stakeETH gas too high");
-        assertLt(stakeUSDCGas, 300_000, "stakeUSDC gas too high");
-        assertLt(claimGas, 200_000, "claim gas too high"); // V2 claim is more complex
+        // Verify reasonable gas usage (V2 with UUPS proxy has ~2.5k overhead per call)
+        assertLt(stakeETHGas, 260_000, "stakeETH gas too high");
+        assertLt(stakeUSDCGas, 310_000, "stakeUSDC gas too high");
+        assertLt(claimGas, 210_000, "claim gas too high"); // V2 claim is more complex
     }
 }
