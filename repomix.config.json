@@ -1,0 +1,30 @@
+{
+  "output": {
+    "filePath": "repomix-output.md",
+    "style": "markdown",
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "topFilesLength": 10,
+    "showLineNumbers": true
+  },
+  "include": [
+    "src/**/*.sol",
+    "script/**/*.sol",
+    "test/**/*.sol",
+    "foundry.toml",
+    "CLAUDE.md",
+    "README.md"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "broadcast/**",
+      "cache/**",
+      "out/**",
+      "lib/**",
+      "node_modules/**",
+      "*.log"
+    ]
+  }
+}

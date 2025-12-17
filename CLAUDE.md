@@ -67,6 +67,9 @@ forge fmt
 forge script script/DeployV2.s.sol --broadcast --rpc-url base_sepolia
 ```
 
+## Repomix
+To pack the codebase for AI context, use the `pack_codebase` MCP tool or run `npx repomix`. Config is in `repomix.config.json` - includes contracts, scripts, tests, and docs.
+
 ## Git Workflow
 - Keep commit messages concise
 - Do not include Claude attribution or "Generated with Claude" footer
