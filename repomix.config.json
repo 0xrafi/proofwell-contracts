@@ -1,7 +1,7 @@
 {
   "output": {
-    "filePath": "repomix-output.txt",
-    "style": "markdown",
+    "filePath": "repomix-output.xml",
+    "style": "xml",
     "removeComments": false,
     "removeEmptyLines": false,
     "topFilesLength": 10,

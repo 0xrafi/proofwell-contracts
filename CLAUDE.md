@@ -75,7 +75,7 @@ For AI context packing, run `npx repomix`. Config is in `repomix.config.json`.
 When working on contract changes that affect the iOS app, read the sister repo's repomix output for full context:
 ```bash
 # Read iOS app codebase context
-cat ~/Projects/proofwell-mvp/repomix-output.txt
+cat ~/Projects/proofwell-mvp/repomix-output.xml
 ```
 
 This is especially useful for understanding:
