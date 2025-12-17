@@ -68,7 +68,20 @@ forge script script/DeployV2.s.sol --broadcast --rpc-url base_sepolia
 ```
 
 ## Repomix
-To pack the codebase for AI context, use the `pack_codebase` MCP tool or run `npx repomix`. Config is in `repomix.config.json` - includes contracts, scripts, tests, and docs.
+
+For AI context packing, run `npx repomix`. Config is in `repomix.config.json`.
+
+### Cross-Repo Context
+When working on contract changes that affect the iOS app, read the sister repo's repomix output for full context:
+```bash
+# Read iOS app codebase context
+cat ~/Projects/proofwell-mvp/repomix-output.txt
+```
+
+This is especially useful for understanding:
+- How the iOS app signs proofs (Secure Enclave P-256)
+- Wallet integration (WalletConnect + Privy embedded wallets)
+- How contract ABIs are consumed in Swift
 
 ## Git Workflow
 - Keep commit messages concise
