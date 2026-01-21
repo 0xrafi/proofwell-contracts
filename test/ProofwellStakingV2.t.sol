@@ -358,7 +358,7 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user1);
         staking.stakeETH{value: 1 ether}(2 hours, 10, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
 
-        // 5/10 days successful
+        // 5/10 days successful (not a winner - binary payout means $0 returned)
         _setSuccessfulDays(user1, 5);
 
         vm.warp(block.timestamp + 10 * SECONDS_PER_DAY + 1);
@@ -370,18 +370,18 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user1);
         staking.claim();
 
-        // User gets 0.5 ETH (50%)
-        // Slashed: 0.5 ETH split as:
-        //   40% (0.2 ETH) to winner pool
-        //   40% (0.2 ETH) to treasury
-        //   20% (0.1 ETH) to charity
+        // Binary payout: User gets $0 (not 100% success)
+        // Full 1 ETH slashed and distributed:
+        //   40% (0.4 ETH) to winner pool
+        //   40% (0.4 ETH) to treasury
+        //   20% (0.2 ETH) to charity
         // Since this is the last staker and no winners, pool is finalized:
-        //   Pool (0.2 ETH) split: 67% to treasury (0.134), 33% to charity (0.066)
-        // Total treasury: 0.2 + 0.134 = 0.334 ETH
-        // Total charity: 0.1 + 0.066 = 0.166 ETH
-        assertEq(user1.balance, userBefore + 0.5 ether);
-        assertEq(treasury.balance, treasuryBefore + 0.334 ether);
-        assertEq(charity.balance, charityBefore + 0.166 ether);
+        //   Pool (0.4 ETH) split: 67% to treasury (0.268), 33% to charity (0.132)
+        // Total treasury: 0.4 + 0.268 = 0.668 ETH
+        // Total charity: 0.2 + 0.132 = 0.332 ETH
+        assertEq(user1.balance, userBefore); // No refund
+        assertEq(treasury.balance, treasuryBefore + 0.668 ether);
+        assertEq(charity.balance, charityBefore + 0.332 ether);
     }
 
     function test_Claim_USDC_PartialSuccess_Distribution() public {
@@ -392,7 +392,7 @@ contract ProofwellStakingV2Test is Test {
         staking.stakeUSDC(stakeAmount, 2 hours, 10, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
         vm.stopPrank();
 
-        // 5/10 days successful
+        // 5/10 days successful (not a winner - binary payout means $0 returned)
         _setSuccessfulDays(user1, 5);
 
         vm.warp(block.timestamp + 10 * SECONDS_PER_DAY + 1);
@@ -404,18 +404,120 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user1);
         staking.claim();
 
-        // User gets 50 USDC (50%)
-        // Slashed: 50 USDC split as:
-        //   40% (20 USDC) to winner pool
-        //   40% (20 USDC) to treasury
-        //   20% (10 USDC) to charity
+        // Binary payout: User gets $0 (not 100% success)
+        // Full 100 USDC slashed and distributed:
+        //   40% (40 USDC) to winner pool
+        //   40% (40 USDC) to treasury
+        //   20% (20 USDC) to charity
         // Since last staker and no winners, pool finalized:
-        //   Pool (20 USDC) split: 67% treasury (13.4), 33% charity (6.6)
-        // Total treasury: 20 + 13.4 = 33.4 USDC
-        // Total charity: 10 + 6.6 = 16.6 USDC
-        assertEq(usdc.balanceOf(user1), userBefore + 50e6);
-        assertEq(usdc.balanceOf(treasury), treasuryBefore + 33400000); // 20 + 13.4
-        assertEq(usdc.balanceOf(charity), charityBefore + 16600000); // 10 + 6.6
+        //   Pool (40 USDC) split: 67% treasury (26.8), 33% charity (13.2)
+        // Total treasury: 40 + 26.8 = 66.8 USDC
+        // Total charity: 20 + 13.2 = 33.2 USDC
+        assertEq(usdc.balanceOf(user1), userBefore); // No refund
+        assertEq(usdc.balanceOf(treasury), treasuryBefore + 66800000);
+        assertEq(usdc.balanceOf(charity), charityBefore + 33200000);
+    }
+
+    // ============ Binary Payout Tests ============
+
+    function test_BinaryPayout_AllDaysSuccess_FullRefund() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        // 7/7 days successful = winner
+        _setSuccessfulDays(user1, 7);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        uint256 userBefore = user1.balance;
+
+        vm.prank(user1);
+        staking.claim();
+
+        // Winner gets full stake back (no slashing)
+        assertEq(user1.balance, userBefore + 1 ether);
+    }
+
+    function test_BinaryPayout_OneDayMissed_NoRefund() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        // 6/7 days successful = NOT a winner (binary: miss one = lose all)
+        _setSuccessfulDays(user1, 6);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        uint256 userBefore = user1.balance;
+        uint256 treasuryBefore = treasury.balance;
+        uint256 charityBefore = charity.balance;
+
+        vm.prank(user1);
+        staking.claim();
+
+        // User gets $0 - entire stake slashed
+        assertEq(user1.balance, userBefore);
+        // Distribution: 40% pool, 40% treasury, 20% charity
+        // Pool finalized: 67% treasury, 33% charity
+        assertEq(treasury.balance, treasuryBefore + 0.668 ether);
+        assertEq(charity.balance, charityBefore + 0.332 ether);
+    }
+
+    function test_BinaryPayout_MinimalSuccess_NoRefund() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        // 1/7 days successful = NOT a winner
+        _setSuccessfulDays(user1, 1);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        uint256 userBefore = user1.balance;
+
+        vm.prank(user1);
+        staking.claim();
+
+        // User gets $0 - entire stake slashed
+        assertEq(user1.balance, userBefore);
+    }
+
+    function test_BinaryPayout_ZeroSuccess_NoRefund() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        // 0/7 days successful = NOT a winner
+        // successfulDays defaults to 0, no need to set
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        uint256 userBefore = user1.balance;
+
+        vm.prank(user1);
+        staking.claim();
+
+        // User gets $0 - entire stake slashed
+        assertEq(user1.balance, userBefore);
+    }
+
+    function test_BinaryPayout_USDC_OneDayMissed_NoRefund() public {
+        uint256 stakeAmount = 100e6; // 100 USDC
+
+        vm.startPrank(user1);
+        usdc.approve(address(staking), stakeAmount);
+        staking.stakeUSDC(stakeAmount, 2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+        vm.stopPrank();
+
+        // 6/7 days successful = NOT a winner
+        _setSuccessfulDays(user1, 6);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        uint256 userBefore = usdc.balanceOf(user1);
+
+        vm.prank(user1);
+        staking.claim();
+
+        // User gets $0 - entire stake slashed
+        assertEq(usdc.balanceOf(user1), userBefore);
     }
 
     // ============ Cohort Winner Distribution Tests ============
@@ -525,7 +627,7 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user1);
         staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
 
-        // User2 stakes and fails partially
+        // User2 stakes and fails partially (binary payout: still loses everything)
         vm.prank(user2);
         staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X_2, TEST_PUB_KEY_Y_2);
         _setSuccessfulDays(user2, 3); // Not a winner
@@ -541,9 +643,9 @@ contract ProofwellStakingV2Test is Test {
         (uint256 poolAfterUser1,,,,) = staking.getCohortInfo(cohort);
         assertEq(poolAfterUser1, 0.4 ether);
 
-        // User2 claims - slashes ~0.571 ETH (4/7 of stake)
-        // That's 0.228 ETH to pool, 0.228 ETH to treasury, 0.115 ETH to charity (approx)
-        // Then pool is finalized: total pool ~0.628 ETH split 67/33
+        // User2 claims - binary payout means full 1 ETH slashed
+        // 0.4 ETH to pool, 0.4 ETH to treasury, 0.2 ETH to charity
+        // Then pool is finalized: total pool 0.8 ETH split 67/33
         vm.prank(user2);
         staking.claim();
 

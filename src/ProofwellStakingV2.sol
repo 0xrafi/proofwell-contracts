@@ -344,12 +344,11 @@ contract ProofwellStakingV2 is
         uint256 cohort = userStake.cohortWeek;
         bool isUSDC = userStake.isUSDC;
 
-        // Calculate base return
-        uint256 amountReturned = (totalAmount * successfulDays) / durationDays;
-        uint256 amountSlashed = totalAmount - amountReturned;
-
-        uint256 winnerBonus = 0;
+        // Binary outcome: full refund or nothing
         bool isWinner = successfulDays == durationDays;
+        uint256 amountReturned = isWinner ? totalAmount : 0;
+        uint256 amountSlashed = isWinner ? 0 : totalAmount;
+        uint256 winnerBonus = 0;
 
         // Process slashed amount distribution
         if (amountSlashed > 0) {
