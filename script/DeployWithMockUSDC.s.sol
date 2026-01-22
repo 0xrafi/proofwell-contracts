@@ -44,7 +44,7 @@ contract DeployWithMockUSDCScript is Script {
         vm.stopBroadcast();
 
         // Verify deployment
-        ProofwellStakingV2 staking = ProofwellStakingV2(address(proxy));
+        ProofwellStakingV2 staking = ProofwellStakingV2(payable(address(proxy)));
         console.log("");
         console.log("=== Deployment Summary ===");
         console.log("MockUSDC:        ", address(mockUsdc));

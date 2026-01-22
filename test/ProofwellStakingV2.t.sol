@@ -54,7 +54,7 @@ contract ProofwellStakingV2Test is Test {
         // Deploy via proxy
         ProofwellStakingV2 implementation = new ProofwellStakingV2();
         bytes memory initData = abi.encodeCall(ProofwellStakingV2.initialize, (treasury, charity, address(usdc)));
-        staking = ProofwellStakingV2(address(new ERC1967Proxy(address(implementation), initData)));
+        staking = ProofwellStakingV2(payable(address(new ERC1967Proxy(address(implementation), initData))));
 
         vm.deal(user1, 10 ether);
         vm.deal(user2, 10 ether);
@@ -75,7 +75,7 @@ contract ProofwellStakingV2Test is Test {
         assertEq(staking.treasuryPercent(), 40);
         assertEq(staking.charityPercent(), 20);
         assertEq(staking.owner(), owner);
-        assertEq(staking.version(), "2.0.0");
+        assertEq(staking.version(), "2.1.0");
     }
 
     function test_Initialize_RevertIf_ZeroTreasury() public {
@@ -755,7 +755,7 @@ contract ProofwellStakingV2Test is Test {
     }
 
     function test_Version() public view {
-        assertEq(staking.version(), "2.0.0");
+        assertEq(staking.version(), "2.1.0");
     }
 
     // ============ Constants Tests ============
@@ -766,15 +766,53 @@ contract ProofwellStakingV2Test is Test {
         assertEq(staking.GRACE_PERIOD(), 6 hours);
         assertEq(staking.MIN_STAKE_ETH(), 0.001 ether);
         assertEq(staking.MIN_STAKE_USDC(), 1e6);
+        assertEq(staking.MIN_DURATION_DAYS(), 3);
         assertEq(staking.MAX_DURATION_DAYS(), 365);
         assertEq(staking.MAX_GOAL_SECONDS(), 24 hours);
+    }
+
+    function test_StakeETH_RevertIf_DurationTooShort() public {
+        vm.expectRevert(ProofwellStakingV2.InvalidDuration.selector);
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 2, TEST_PUB_KEY_X, TEST_PUB_KEY_Y); // 2 < MIN_DURATION_DAYS
+    }
+
+    function test_StakeUSDC_RevertIf_DurationTooShort() public {
+        vm.startPrank(user1);
+        usdc.approve(address(staking), 100e6);
+
+        vm.expectRevert(ProofwellStakingV2.InvalidDuration.selector);
+        staking.stakeUSDC(100e6, 2 hours, 1, TEST_PUB_KEY_X, TEST_PUB_KEY_Y); // 1 < MIN_DURATION_DAYS
+        vm.stopPrank();
+    }
+
+    function test_ReceiveETH_DirectTransfer() public {
+        uint256 amount = 1 ether;
+        uint256 balanceBefore = address(staking).balance;
+
+        // Send ETH directly to contract
+        vm.deal(user1, amount);
+        vm.prank(user1);
+        (bool success,) = address(staking).call{value: amount}("");
+
+        assertTrue(success);
+        assertEq(address(staking).balance, balanceBefore + amount);
+    }
+
+    function test_UpgradeEmitsEvent() public {
+        ProofwellStakingV2 newImpl = new ProofwellStakingV2();
+
+        vm.expectEmit(true, false, false, false);
+        emit ProofwellStakingV2.UpgradeAuthorized(address(newImpl));
+
+        staking.upgradeToAndCall(address(newImpl), "");
     }
 
     // ============ Fuzz Tests ============
 
     function testFuzz_StakeETH_ValidParameters(uint256 goalSeconds, uint256 durationDays, uint256 stakeAmount) public {
         goalSeconds = bound(goalSeconds, 1, 24 hours);
-        durationDays = bound(durationDays, 1, 365);
+        durationDays = bound(durationDays, 3, 365); // MIN_DURATION_DAYS = 3
         stakeAmount = bound(stakeAmount, MIN_STAKE_ETH, 100 ether);
 
         vm.deal(user1, stakeAmount);
@@ -833,7 +871,7 @@ contract ProofwellStakingV2IntegrationTest is Test {
         // Deploy via proxy
         ProofwellStakingV2 implementation = new ProofwellStakingV2();
         bytes memory initData = abi.encodeCall(ProofwellStakingV2.initialize, (treasury, charity, address(usdc)));
-        staking = ProofwellStakingV2(address(new ERC1967Proxy(address(implementation), initData)));
+        staking = ProofwellStakingV2(payable(address(new ERC1967Proxy(address(implementation), initData))));
     }
 
     /// @dev Helper to set successful days via storage

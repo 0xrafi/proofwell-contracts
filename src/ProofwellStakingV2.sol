@@ -68,6 +68,7 @@ contract ProofwellStakingV2 is
     event WinnerBonusPaid(address indexed user, uint256 amount, uint256 cohort, bool isUSDC);
     event CharityDonation(uint256 amount, uint256 cohort, bool isUSDC);
     event EmergencyWithdraw(address indexed token, uint256 amount);
+    event UpgradeAuthorized(address indexed newImplementation);
 
     // ============ Constants ============
     uint256 public constant SECONDS_PER_DAY = 86400;
@@ -75,6 +76,7 @@ contract ProofwellStakingV2 is
     uint256 public constant GRACE_PERIOD = 6 hours;
     uint256 public constant MIN_STAKE_ETH = 0.001 ether;
     uint256 public constant MIN_STAKE_USDC = 1e6; // 1 USDC (6 decimals)
+    uint256 public constant MIN_DURATION_DAYS = 3;
     uint256 public constant MAX_DURATION_DAYS = 365;
     uint256 public constant MAX_GOAL_SECONDS = 24 hours;
 
@@ -217,7 +219,7 @@ contract ProofwellStakingV2 is
     {
         if (stakes[msg.sender].amount != 0) revert StakeAlreadyExists();
         if (goalSeconds == 0 || goalSeconds > MAX_GOAL_SECONDS) revert InvalidGoal();
-        if (durationDays == 0 || durationDays > MAX_DURATION_DAYS) revert InvalidDuration();
+        if (durationDays < MIN_DURATION_DAYS || durationDays > MAX_DURATION_DAYS) revert InvalidDuration();
         if (msg.value < MIN_STAKE_ETH) revert InsufficientStake();
 
         _validateAndRegisterKey(pubKeyX, pubKeyY);
@@ -257,7 +259,7 @@ contract ProofwellStakingV2 is
     {
         if (stakes[msg.sender].amount != 0) revert StakeAlreadyExists();
         if (goalSeconds == 0 || goalSeconds > MAX_GOAL_SECONDS) revert InvalidGoal();
-        if (durationDays == 0 || durationDays > MAX_DURATION_DAYS) revert InvalidDuration();
+        if (durationDays < MIN_DURATION_DAYS || durationDays > MAX_DURATION_DAYS) revert InvalidDuration();
         if (amount < MIN_STAKE_USDC) revert InsufficientStake();
 
         _validateAndRegisterKey(pubKeyX, pubKeyY);
@@ -536,11 +538,18 @@ contract ProofwellStakingV2 is
 
     /// @notice Get contract version
     function version() external pure returns (string memory) {
-        return "2.0.0";
+        return "2.1.0";
     }
 
     // ============ UUPS ============
 
     /// @notice Authorize upgrade to new implementation (owner only)
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {
+        emit UpgradeAuthorized(newImplementation);
+    }
+
+    // ============ Receive ============
+
+    /// @notice Accept direct ETH transfers (for emergencyWithdraw recovery)
+    receive() external payable {}
 }

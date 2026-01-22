@@ -36,7 +36,7 @@ contract DeployV2Script is Script {
         vm.stopBroadcast();
 
         // Verify deployment via proxy
-        ProofwellStakingV2 staking = ProofwellStakingV2(address(proxy));
+        ProofwellStakingV2 staking = ProofwellStakingV2(payable(address(proxy)));
         console.log("");
         console.log("Verification:");
         console.log("  Version:", staking.version());
