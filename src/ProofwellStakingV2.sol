@@ -33,6 +33,7 @@ contract ProofwellStakingV2 is
     error KeyAlreadyRegistered();
     error InvalidPublicKey();
     error StakeNotEnded();
+    error ResolutionBufferNotElapsed();
     error DayAlreadyVerified();
     error InvalidDayIndex();
     error ProofSubmissionWindowClosed();
@@ -67,6 +68,7 @@ contract ProofwellStakingV2 is
     event CharityUpdated(address indexed oldCharity, address indexed newCharity);
     event WinnerBonusPaid(address indexed user, uint256 amount, uint256 cohort, bool isUSDC);
     event CharityDonation(uint256 amount, uint256 cohort, bool isUSDC);
+    event ResolvedExpired(address indexed user, address indexed resolver, uint256 amountReturned, uint256 amountSlashed);
     event EmergencyWithdraw(address indexed token, uint256 amount);
     event UpgradeAuthorized(address indexed newImplementation);
 
@@ -79,6 +81,7 @@ contract ProofwellStakingV2 is
     uint256 public constant MIN_DURATION_DAYS = 3;
     uint256 public constant MAX_DURATION_DAYS = 365;
     uint256 public constant MAX_GOAL_SECONDS = 24 hours;
+    uint256 public constant RESOLUTION_BUFFER = 7 days;
 
     // ============ Structs ============
     struct Stake {
@@ -338,34 +341,59 @@ contract ProofwellStakingV2 is
         uint256 stakeEndTimestamp = userStake.startTimestamp + (userStake.durationDays * SECONDS_PER_DAY);
         if (block.timestamp < stakeEndTimestamp) revert StakeNotEnded();
 
+        (uint256 amountReturned, uint256 amountSlashed, uint256 winnerBonus, bool isUSDC) = _processClaim(msg.sender);
+
+        emit Claimed(msg.sender, amountReturned, amountSlashed, winnerBonus, isUSDC);
+    }
+
+    /// @notice Resolve an expired stake for a user who hasn't claimed
+    /// @dev Anyone can call after stake end + RESOLUTION_BUFFER. Funds go to the staker.
+    /// @param user Address of the staker to resolve
+    function resolveExpired(address user) external nonReentrant whenNotPaused {
+        Stake storage userStake = stakes[user];
+        if (userStake.amount == 0) revert NoStakeFound();
+        if (userStake.claimed) revert StakeAlreadyClaimed();
+
+        uint256 stakeEndTimestamp = userStake.startTimestamp + (userStake.durationDays * SECONDS_PER_DAY);
+        if (block.timestamp < stakeEndTimestamp + RESOLUTION_BUFFER) revert ResolutionBufferNotElapsed();
+
+        (uint256 amountReturned, uint256 amountSlashed,,) = _processClaim(user);
+
+        emit ResolvedExpired(user, msg.sender, amountReturned, amountSlashed);
+    }
+
+    // ============ Internal Functions ============
+
+    function _processClaim(address user)
+        internal
+        returns (uint256 amountReturned, uint256 amountSlashed, uint256 winnerBonus, bool isUSDC)
+    {
+        Stake storage userStake = stakes[user];
         userStake.claimed = true;
 
         uint256 totalAmount = userStake.amount;
         uint256 successfulDays = userStake.successfulDays;
         uint256 durationDays = userStake.durationDays;
         uint256 cohort = userStake.cohortWeek;
-        bool isUSDC = userStake.isUSDC;
+        isUSDC = userStake.isUSDC;
 
         // Binary outcome: full refund or nothing
         bool isWinner = successfulDays == durationDays;
-        uint256 amountReturned = isWinner ? totalAmount : 0;
-        uint256 amountSlashed = isWinner ? 0 : totalAmount;
-        uint256 winnerBonus = 0;
+        amountReturned = isWinner ? totalAmount : 0;
+        amountSlashed = isWinner ? 0 : totalAmount;
 
         // Process slashed amount distribution
         if (amountSlashed > 0) {
             uint256 toWinnersPool = (amountSlashed * winnerPercent) / 100;
             uint256 toTreasury = (amountSlashed * treasuryPercent) / 100;
-            uint256 toCharity = amountSlashed - toWinnersPool - toTreasury; // Remainder to charity
+            uint256 toCharity = amountSlashed - toWinnersPool - toTreasury;
 
-            // Add to cohort pool
             if (isUSDC) {
                 cohortPoolUSDC[cohort] += toWinnersPool;
             } else {
                 cohortPoolETH[cohort] += toWinnersPool;
             }
 
-            // Transfer treasury and charity portions immediately
             _transferFunds(treasury, toTreasury, isUSDC);
             _transferFunds(charity, toCharity, isUSDC);
 
@@ -388,15 +416,13 @@ contract ProofwellStakingV2 is
                     }
                     amountReturned += winnerBonus;
 
-                    emit WinnerBonusPaid(msg.sender, winnerBonus, cohort, isUSDC);
+                    emit WinnerBonusPaid(user, winnerBonus, cohort, isUSDC);
                 }
                 cohortRemainingWinners[cohort]--;
             }
         }
-        // Note: Non-winners don't decrement cohortRemainingWinners - that counter
-        // only tracks potential winners who haven't claimed yet
 
-        // Check if this is the last claim in cohort and handle leftover pool
+        // Decrement cohort staker count and finalize if last
         cohortTotalStakers[cohort]--;
         if (cohortTotalStakers[cohort] == 0 && !cohortFinalized[cohort]) {
             _finalizeLeftoverPool(cohort);
@@ -404,13 +430,9 @@ contract ProofwellStakingV2 is
 
         // Transfer user's return
         if (amountReturned > 0) {
-            _transferFunds(msg.sender, amountReturned, isUSDC);
+            _transferFunds(user, amountReturned, isUSDC);
         }
-
-        emit Claimed(msg.sender, amountReturned, amountSlashed, winnerBonus, isUSDC);
     }
-
-    // ============ Internal Functions ============
 
     function _validateAndRegisterKey(bytes32 pubKeyX, bytes32 pubKeyY) internal {
         if (!P256.isValidPublicKey(pubKeyX, pubKeyY)) revert InvalidPublicKey();

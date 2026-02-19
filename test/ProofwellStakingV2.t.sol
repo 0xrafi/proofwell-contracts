@@ -1853,6 +1853,168 @@ contract ProofwellStakingV2Test is Test {
         assertEq(staking.treasuryPercent(), treasury_);
         assertEq(staking.charityPercent(), charity_);
     }
+
+    // ============ resolveExpired Tests ============
+
+    function test_ResolveExpired_AfterBuffer_LoserETH() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        // 0 successful days — loser
+        // Warp past stake end + 7 day buffer
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 7 days + 1);
+
+        uint256 treasuryBefore = treasury.balance;
+        uint256 charityBefore = charity.balance;
+        address resolver = makeAddr("resolver");
+
+        vm.prank(resolver);
+        staking.resolveExpired(user1);
+
+        // Loser: all slashed. 40% to winner pool, 40% to treasury, 20% to charity.
+        // Since this is the only staker, cohort finalizes immediately:
+        // leftover pool (0.4 ETH) split 67% treasury + 33% charity.
+        // Treasury: 0.4 + 0.268 = 0.668, Charity: 0.2 + 0.132 = 0.332
+        assertEq(treasury.balance, treasuryBefore + 0.668 ether);
+        assertEq(charity.balance, charityBefore + 0.332 ether);
+
+        // Stake marked as claimed
+        ProofwellStakingV2.Stake memory s = staking.getStake(user1);
+        assertTrue(s.claimed);
+    }
+
+    function test_ResolveExpired_AfterBuffer_WinnerETH() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        // All days successful — winner
+        _setSuccessfulDays(user1, 7);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 7 days + 1);
+
+        uint256 userBefore = user1.balance;
+        address resolver = makeAddr("resolver");
+
+        vm.prank(resolver);
+        staking.resolveExpired(user1);
+
+        // Winner: full refund sent to user, not resolver
+        assertEq(user1.balance, userBefore + 1 ether);
+        assertEq(resolver.balance, 0);
+    }
+
+    function test_ResolveExpired_RevertIf_BeforeBuffer() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        // Warp past stake end but NOT past the 7-day buffer
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 3 days);
+
+        vm.expectRevert(ProofwellStakingV2.ResolutionBufferNotElapsed.selector);
+        staking.resolveExpired(user1);
+    }
+
+    function test_ResolveExpired_RevertIf_AlreadyClaimed() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        // User self-claims
+        vm.prank(user1);
+        staking.claim();
+
+        // Resolver tries after buffer
+        vm.warp(block.timestamp + 7 days + 1);
+
+        vm.expectRevert(ProofwellStakingV2.StakeAlreadyClaimed.selector);
+        staking.resolveExpired(user1);
+    }
+
+    function test_ResolveExpired_RevertIf_NoStake() public {
+        address nobody = makeAddr("nobody");
+
+        vm.expectRevert(ProofwellStakingV2.NoStakeFound.selector);
+        staking.resolveExpired(nobody);
+    }
+
+    function test_ResolveExpired_EmitsEvent() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 7 days + 1);
+
+        address resolver = makeAddr("resolver");
+
+        vm.expectEmit(true, true, false, true);
+        emit ProofwellStakingV2.ResolvedExpired(user1, resolver, 0, 1 ether);
+
+        vm.prank(resolver);
+        staking.resolveExpired(user1);
+    }
+
+    function test_ResolveExpired_TriggersCohortFinalization() public {
+        // Two users in same cohort
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+        vm.prank(user2);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X_2, TEST_PUB_KEY_Y_2);
+
+        uint256 cohort = staking.getCurrentWeek();
+
+        // user1 is a loser, user2 is a loser
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        // user1 self-claims (loser), cohort not finalized yet
+        vm.prank(user1);
+        staking.claim();
+        assertFalse(staking.cohortFinalized(cohort));
+        assertEq(staking.cohortTotalStakers(cohort), 1);
+
+        // Warp past buffer for resolve
+        vm.warp(block.timestamp + 7 days + 1);
+
+        // Resolve user2 — should finalize cohort
+        address resolver = makeAddr("resolver");
+        vm.prank(resolver);
+        staking.resolveExpired(user2);
+
+        assertTrue(staking.cohortFinalized(cohort));
+        assertEq(staking.cohortTotalStakers(cohort), 0);
+    }
+
+    function test_ResolveExpired_USDC() public {
+        vm.startPrank(user1);
+        usdc.approve(address(staking), 100e6);
+        staking.stakeUSDC(100e6, 2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+        vm.stopPrank();
+
+        // Winner
+        _setSuccessfulDays(user1, 7);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 7 days + 1);
+
+        uint256 userBefore = usdc.balanceOf(user1);
+        address resolver = makeAddr("resolver");
+
+        vm.prank(resolver);
+        staking.resolveExpired(user1);
+
+        // Funds go to user, not resolver
+        assertEq(usdc.balanceOf(user1), userBefore + 100e6);
+        assertEq(usdc.balanceOf(resolver), 0);
+    }
+
+    function test_ResolveExpired_RevertIf_OneSecondBeforeBuffer() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        // Warp to 1 second before buffer expires
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 7 days - 1);
+
+        vm.expectRevert(ProofwellStakingV2.ResolutionBufferNotElapsed.selector);
+        staking.resolveExpired(user1);
+    }
 }
 
 /// @notice Integration tests for V2 specific features
