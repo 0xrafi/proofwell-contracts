@@ -395,14 +395,14 @@ contract ProofwellStakingV2 is
     /// @dev Shared claim logic for claim() and resolveExpired().
     ///      Handles: slash distribution, winner bonus, cohort accounting, state cleanup.
     ///      Does NOT transfer funds to the user — callers handle that differently.
+    ///      Follows checks-effects-interactions: user state cleared before external calls.
     function _processClaim(address user)
         internal
         returns (uint256 amountReturned, uint256 amountSlashed, uint256 winnerBonus, bool isUSDC)
     {
         Stake storage userStake = stakes[user];
-        userStake.claimed = true;
 
-        // Cache all values before clearing state
+        // ── Cache all values from storage ──
         uint256 totalAmount = userStake.amount;
         uint256 successfulDays = userStake.successfulDays;
         uint256 durationDays = userStake.durationDays;
@@ -411,12 +411,20 @@ contract ProofwellStakingV2 is
         bytes32 pubKeyX = userStake.pubKeyX;
         bytes32 pubKeyY = userStake.pubKeyY;
 
-        // Binary outcome: full refund or nothing
+        // ── Effects: clear ALL user state before any external calls ──
+        bytes32 keyHash = keccak256(abi.encodePacked(pubKeyX, pubKeyY));
+        delete registeredKeys[keyHash];
+        for (uint256 i = 0; i < durationDays; i++) {
+            delete dayVerified[user][i];
+        }
+        delete stakes[user];
+
+        // ── Compute outcome ──
         bool isWinner = successfulDays == durationDays;
         amountReturned = isWinner ? totalAmount : 0;
         amountSlashed = isWinner ? 0 : totalAmount;
 
-        // Process slashed amount distribution
+        // ── Interactions: slashed amount distribution (external calls) ──
         if (amountSlashed > 0) {
             uint256 toWinnersPool = (amountSlashed * winnerPercent) / 100;
             uint256 toTreasury = (amountSlashed * treasuryPercent) / 100;
@@ -436,7 +444,7 @@ contract ProofwellStakingV2 is
             }
         }
 
-        // Per-token cohort accounting
+        // ── Interactions: per-token cohort accounting (may trigger _finalizeLeftoverPool) ──
         if (isUSDC) {
             if (!isWinner && cohortRemainingWinnersUSDC[cohort] > 0) {
                 cohortRemainingWinnersUSDC[cohort]--;
@@ -480,14 +488,6 @@ contract ProofwellStakingV2 is
                 _finalizeLeftoverPool(cohort, false);
             }
         }
-
-        // Clear state for re-staking
-        bytes32 keyHash = keccak256(abi.encodePacked(pubKeyX, pubKeyY));
-        delete registeredKeys[keyHash];
-        for (uint256 i = 0; i < durationDays; i++) {
-            delete dayVerified[user][i];
-        }
-        delete stakes[user];
     }
 
     function _validateAndRegisterKey(bytes32 pubKeyX, bytes32 pubKeyY) internal {

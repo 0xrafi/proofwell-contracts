@@ -2310,6 +2310,200 @@ contract ProofwellStakingV2Test is Test {
         assertEq(user1.balance, user1ETHBefore + 1 ether);
         assertEq(usdc.balanceOf(user1), user1USDCBefore);
     }
+
+    // ============ State Cleanup Verification ============
+
+    /// @notice Verify claim deletes ALL stake struct fields (not just amount)
+    function test_Claim_DeletesFullStakeStruct() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 3, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        _setSuccessfulDays(user1, 3);
+        vm.warp(block.timestamp + 3 * SECONDS_PER_DAY + 1);
+
+        vm.prank(user1);
+        staking.claim();
+
+        ProofwellStakingV2.Stake memory s = staking.getStake(user1);
+        assertEq(s.amount, 0);
+        assertEq(s.goalSeconds, 0);
+        assertEq(s.startTimestamp, 0);
+        assertEq(s.durationDays, 0);
+        assertEq(s.pubKeyX, bytes32(0));
+        assertEq(s.pubKeyY, bytes32(0));
+        assertEq(s.successfulDays, 0);
+        assertFalse(s.claimed);
+        assertFalse(s.isUSDC);
+        assertEq(s.cohortWeek, 0);
+    }
+
+    /// @notice Verify resolveExpired deletes full stake struct and clears key
+    function test_ResolveExpired_ClearsFullState() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 3, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        vm.warp(block.timestamp + 3 * SECONDS_PER_DAY + 7 days + 1);
+
+        vm.prank(user2);
+        staking.resolveExpired(user1);
+
+        // Full struct zeroed
+        ProofwellStakingV2.Stake memory s = staking.getStake(user1);
+        assertEq(s.amount, 0);
+        assertEq(s.goalSeconds, 0);
+        assertEq(s.pubKeyX, bytes32(0));
+
+        // Key deregistered
+        assertEq(staking.getKeyOwner(TEST_PUB_KEY_X, TEST_PUB_KEY_Y), address(0));
+    }
+
+    /// @notice Verify dayVerified cleared for all days (not just day 0)
+    function test_Claim_ClearsAllDayVerifiedEntries() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        // Set dayVerified[user1][i] = true for days 0..6 via storage
+        // dayVerified is at slot 2: mapping(address => mapping(uint256 => bool))
+        for (uint256 day = 0; day < 7; day++) {
+            bytes32 innerSlot = keccak256(abi.encode(user1, uint256(2)));
+            bytes32 daySlot = keccak256(abi.encode(day, innerSlot));
+            vm.store(address(staking), daySlot, bytes32(uint256(1)));
+            assertTrue(staking.dayVerified(user1, day), "dayVerified should be set");
+        }
+
+        _setSuccessfulDays(user1, 7);
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        vm.prank(user1);
+        staking.claim();
+
+        // All 7 dayVerified entries should be cleared
+        for (uint256 i = 0; i < 7; i++) {
+            assertFalse(staking.dayVerified(user1, i), "dayVerified should be cleared");
+        }
+    }
+
+    // ============ Cohort Counter Edge Cases ============
+
+    /// @notice All losers in cohort — remainingWinners counter reaches 0 without underflow
+    function test_ClaimLoser_DoesNotUnderflowWinnerCounter() public {
+        // Two losers, no winners
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 3, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+        vm.prank(user2);
+        staking.stakeETH{value: 1 ether}(2 hours, 3, TEST_PUB_KEY_X_2, TEST_PUB_KEY_Y_2);
+
+        uint256 cohort = staking.getCurrentWeek();
+
+        vm.warp(block.timestamp + 3 * SECONDS_PER_DAY + 1);
+
+        // Both losers (0 successful days)
+        vm.prank(user1);
+        staking.claim();
+        vm.prank(user2);
+        staking.claim();
+
+        (,, uint256 rwETH,, uint256 tsETH,) = staking.getCohortInfo(cohort);
+        assertEq(rwETH, 0, "remainingWinnersETH should be 0");
+        assertEq(tsETH, 0, "totalStakersETH should be 0");
+    }
+
+    // ============ Cross-Token Finalization Isolation ============
+
+    /// @notice ETH last-claimer triggers ETH finalization while USDC stakers remain
+    function test_ETHLastClaimer_WhenUSDCStakersRemain() public {
+        // ETH loser + USDC loser in same cohort
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 3, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        vm.startPrank(user2);
+        usdc.approve(address(staking), 100e6);
+        staking.stakeUSDC(100e6, 2 hours, 3, TEST_PUB_KEY_X_2, TEST_PUB_KEY_Y_2);
+        vm.stopPrank();
+
+        uint256 cohort = staking.getCurrentWeek();
+
+        vm.warp(block.timestamp + 3 * SECONDS_PER_DAY + 1);
+
+        // ETH loser claims — triggers ETH finalization
+        uint256 usdcPoolBefore = staking.cohortPoolUSDC(cohort);
+        vm.prank(user1);
+        staking.claim();
+
+        // ETH pool finalized (swept to treasury/charity)
+        assertEq(staking.cohortPoolETH(cohort), 0, "ETH pool should be finalized");
+
+        // USDC pool untouched
+        assertEq(staking.cohortPoolUSDC(cohort), usdcPoolBefore, "USDC pool should not be touched");
+
+        // USDC staker count still 1
+        (,,, uint256 rwUSDC,, uint256 tsUSDC) = staking.getCohortInfo(cohort);
+        assertEq(tsUSDC, 1, "USDC staker count should still be 1");
+
+        // Now USDC loser claims — triggers USDC finalization independently
+        vm.prank(user2);
+        staking.claim();
+
+        (,,, uint256 rwUSDC2,, uint256 tsUSDC2) = staking.getCohortInfo(cohort);
+        assertEq(tsUSDC2, 0, "USDC staker count should be 0 after claim");
+        assertEq(staking.cohortPoolUSDC(cohort), 0, "USDC pool should be finalized");
+    }
+
+    // ============ Full Lifecycle Re-staking ============
+
+    /// @notice Stake → win → claim → stake again → lose → claim (full cycle)
+    function test_ReStake_FullCycle_WinThenLose() public {
+        // Cycle 1: Win
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 3, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        _setSuccessfulDays(user1, 3);
+        vm.warp(block.timestamp + 3 * SECONDS_PER_DAY + 1);
+
+        vm.prank(user1);
+        staking.claim();
+
+        // Cycle 2: Lose (same key, different amount)
+        vm.prank(user1);
+        staking.stakeETH{value: 0.5 ether}(2 hours, 3, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        vm.warp(block.timestamp + 3 * SECONDS_PER_DAY + 1);
+
+        uint256 balBefore = user1.balance;
+        vm.prank(user1);
+        staking.claim();
+
+        // Loser gets nothing back
+        assertEq(user1.balance, balBefore, "Loser should get 0 back");
+
+        // Stake fully cleared — can stake again
+        ProofwellStakingV2.Stake memory s = staking.getStake(user1);
+        assertEq(s.amount, 0);
+    }
+
+    /// @notice Re-stake with a DIFFERENT key after claim
+    function test_ReStake_DifferentKeyAfterClaim() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 3, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        _setSuccessfulDays(user1, 3);
+        vm.warp(block.timestamp + 3 * SECONDS_PER_DAY + 1);
+
+        vm.prank(user1);
+        staking.claim();
+
+        // Key 1 deregistered
+        assertEq(staking.getKeyOwner(TEST_PUB_KEY_X, TEST_PUB_KEY_Y), address(0));
+
+        // Re-stake with key 2
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 3, TEST_PUB_KEY_X_2, TEST_PUB_KEY_Y_2);
+
+        // Key 2 registered to user1
+        assertEq(staking.getKeyOwner(TEST_PUB_KEY_X_2, TEST_PUB_KEY_Y_2), user1);
+        // Key 1 still deregistered
+        assertEq(staking.getKeyOwner(TEST_PUB_KEY_X, TEST_PUB_KEY_Y), address(0));
+    }
 }
 
 /// @notice Integration tests for V2 specific features
