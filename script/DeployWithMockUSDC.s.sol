@@ -34,10 +34,7 @@ contract DeployWithMockUSDCScript is Script {
         console.log("V2 Implementation deployed to:", address(implementation));
 
         // 4. Deploy proxy with initialization
-        bytes memory initData = abi.encodeCall(
-            ProofwellStakingV2.initialize,
-            (treasury, charity, address(mockUsdc))
-        );
+        bytes memory initData = abi.encodeCall(ProofwellStakingV2.initialize, (treasury, charity, address(mockUsdc)));
         ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), initData);
         console.log("V2 Proxy deployed to:", address(proxy));
 

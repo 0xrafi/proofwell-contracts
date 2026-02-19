@@ -4,11 +4,11 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {P256} from "@openzeppelin/contracts/utils/cryptography/P256.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {Ownable2StepUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title ProofwellStakingV2
 /// @notice Stake ETH or USDC on screen time goals with tiered reward distribution
@@ -68,7 +68,14 @@ contract ProofwellStakingV2 is
     event CharityUpdated(address indexed oldCharity, address indexed newCharity);
     event WinnerBonusPaid(address indexed user, uint256 amount, uint256 cohort, bool isUSDC);
     event CharityDonation(uint256 amount, uint256 cohort, bool isUSDC);
-    event ResolvedExpired(address indexed user, address indexed resolver, uint256 amountReturned, uint256 amountSlashed);
+    event ResolvedExpired(
+        address indexed user,
+        address indexed resolver,
+        uint256 amountReturned,
+        uint256 amountSlashed,
+        uint256 winnerBonus,
+        bool isUSDC
+    );
     event EmergencyWithdraw(address indexed token, uint256 amount);
     event UpgradeAuthorized(address indexed newImplementation);
 
@@ -115,9 +122,12 @@ contract ProofwellStakingV2 is
     // Cohort tracking for winner redistribution
     mapping(uint256 => uint256) public cohortPoolETH; // weekNum => accumulated winner pool
     mapping(uint256 => uint256) public cohortPoolUSDC;
-    mapping(uint256 => uint256) public cohortRemainingWinners; // weekNum => winners who haven't claimed
+    mapping(uint256 => uint256) public cohortRemainingWinners; // weekNum => unprocessed potential winners
     mapping(uint256 => uint256) public cohortTotalStakers; // weekNum => total stakers in cohort
     mapping(uint256 => bool) public cohortFinalized; // weekNum => all claims processed
+
+    /// @dev Reserve storage slots for future upgrades
+    uint256[50] private __gap;
 
     // ============ Constructor ============
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -137,7 +147,6 @@ contract ProofwellStakingV2 is
 
         __Ownable_init(msg.sender);
         __Pausable_init();
-
         treasury = _treasury;
         charity = _charity;
         usdc = IERC20(_usdc);
@@ -243,7 +252,6 @@ contract ProofwellStakingV2 is
         });
 
         cohortTotalStakers[cohortWeek]++;
-        // Assume all stakers are potential winners initially
         cohortRemainingWinners[cohortWeek]++;
 
         emit StakedETH(msg.sender, msg.value, goalSeconds, durationDays, block.timestamp, cohortWeek);
@@ -343,11 +351,18 @@ contract ProofwellStakingV2 is
 
         (uint256 amountReturned, uint256 amountSlashed, uint256 winnerBonus, bool isUSDC) = _processClaim(msg.sender);
 
+        // Transfer user's return (reverts on failure — user's responsibility)
+        if (amountReturned > 0) {
+            _transferFunds(msg.sender, amountReturned, isUSDC);
+        }
+
         emit Claimed(msg.sender, amountReturned, amountSlashed, winnerBonus, isUSDC);
     }
 
     /// @notice Resolve an expired stake for a user who hasn't claimed
     /// @dev Anyone can call after stake end + RESOLUTION_BUFFER. Funds go to the staker.
+    ///      If the staker's address can't receive funds, they are redirected to treasury
+    ///      so that one broken address can't lock an entire cohort.
     /// @param user Address of the staker to resolve
     function resolveExpired(address user) external nonReentrant whenNotPaused {
         Stake storage userStake = stakes[user];
@@ -357,13 +372,23 @@ contract ProofwellStakingV2 is
         uint256 stakeEndTimestamp = userStake.startTimestamp + (userStake.durationDays * SECONDS_PER_DAY);
         if (block.timestamp < stakeEndTimestamp + RESOLUTION_BUFFER) revert ResolutionBufferNotElapsed();
 
-        (uint256 amountReturned, uint256 amountSlashed,,) = _processClaim(user);
+        (uint256 amountReturned, uint256 amountSlashed, uint256 winnerBonus, bool isUSDC) = _processClaim(user);
 
-        emit ResolvedExpired(user, msg.sender, amountReturned, amountSlashed);
+        // Try to send funds to user; redirect to treasury if transfer fails
+        if (amountReturned > 0) {
+            if (!_tryTransferFunds(user, amountReturned, isUSDC)) {
+                _transferFunds(treasury, amountReturned, isUSDC);
+            }
+        }
+
+        emit ResolvedExpired(user, msg.sender, amountReturned, amountSlashed, winnerBonus, isUSDC);
     }
 
     // ============ Internal Functions ============
 
+    /// @dev Shared claim logic for claim() and resolveExpired().
+    ///      Handles: mark claimed, slash distribution, winner bonus, cohort accounting.
+    ///      Does NOT transfer funds to the user — callers handle that differently.
     function _processClaim(address user)
         internal
         returns (uint256 amountReturned, uint256 amountSlashed, uint256 winnerBonus, bool isUSDC)
@@ -402,6 +427,13 @@ contract ProofwellStakingV2 is
             }
         }
 
+        // Losers decrement remaining winners so the pool divides by actual winners
+        if (!isWinner) {
+            if (cohortRemainingWinners[cohort] > 0) {
+                cohortRemainingWinners[cohort]--;
+            }
+        }
+
         // If user is a winner, get share of current pool
         if (isWinner) {
             uint256 remainingWinners = cohortRemainingWinners[cohort];
@@ -427,11 +459,6 @@ contract ProofwellStakingV2 is
         if (cohortTotalStakers[cohort] == 0 && !cohortFinalized[cohort]) {
             _finalizeLeftoverPool(cohort);
         }
-
-        // Transfer user's return
-        if (amountReturned > 0) {
-            _transferFunds(user, amountReturned, isUSDC);
-        }
     }
 
     function _validateAndRegisterKey(bytes32 pubKeyX, bytes32 pubKeyY) internal {
@@ -443,14 +470,33 @@ contract ProofwellStakingV2 is
         registeredKeys[keyHash] = msg.sender;
     }
 
-    function _transferFunds(address to, uint256 amount, bool isUSDC) internal {
+    /// @dev Transfers funds, reverts on failure. Used for treasury/charity and claim().
+    function _transferFunds(address to, uint256 amount, bool isUSDC_) internal {
         if (amount == 0) return;
 
-        if (isUSDC) {
+        if (isUSDC_) {
             usdc.safeTransfer(to, amount);
         } else {
             (bool success,) = to.call{value: amount}("");
             if (!success) revert TransferFailed();
+        }
+    }
+
+    /// @dev Attempts transfer without reverting. Returns false if transfer fails.
+    ///      Used by resolveExpired() to avoid locking cohorts on broken recipient addresses.
+    function _tryTransferFunds(address to, uint256 amount, bool isUSDC_) internal returns (bool) {
+        if (amount == 0) return true;
+
+        if (isUSDC_) {
+            // solhint-disable-next-line no-empty-blocks
+            try IERC20(address(usdc)).transfer(to, amount) returns (bool success) {
+                return success;
+            } catch {
+                return false;
+            }
+        } else {
+            (bool success,) = to.call{value: amount}("");
+            return success;
         }
     }
 
@@ -560,7 +606,7 @@ contract ProofwellStakingV2 is
 
     /// @notice Get contract version
     function version() external pure returns (string memory) {
-        return "2.1.0";
+        return "2.2.0";
     }
 
     // ============ UUPS ============

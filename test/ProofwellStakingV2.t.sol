@@ -82,7 +82,7 @@ contract ProofwellStakingV2Test is Test {
         assertEq(staking.treasuryPercent(), 40);
         assertEq(staking.charityPercent(), 20);
         assertEq(staking.owner(), owner);
-        assertEq(staking.version(), "2.1.0");
+        assertEq(staking.version(), "2.2.0");
     }
 
     function test_Initialize_RevertIf_ZeroTreasury() public {
@@ -564,11 +564,10 @@ contract ProofwellStakingV2Test is Test {
         staking.claim();
 
         // Pool should have 0.4 ETH (40% of 1 ETH slashed)
-        // remainingWinners is 2 (both started as potential winners)
-        // but user1 didn't decrement it since they weren't a winner
+        // remainingWinners is 1 (loser decremented it from 2 to 1)
         (uint256 poolETH,, uint256 remainingWinners,, bool finalized) = staking.getCohortInfo(cohort);
         assertEq(poolETH, 0.4 ether);
-        assertEq(remainingWinners, 2); // Still 2 since non-winner doesn't decrement
+        assertEq(remainingWinners, 1);
         assertFalse(finalized);
 
         // User2 claims (winner, gets bonus)
@@ -576,9 +575,8 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user2);
         staking.claim();
 
-        // User2 gets: 1 ETH (full stake) + 0.4/2 = 0.2 ETH (share of pool with 2 remaining)
-        // Since remainingWinners was 2 when user2 claimed
-        assertEq(user2.balance, user2Before + 1.2 ether);
+        // User2 gets: 1 ETH (full stake) + 0.4/1 = 0.4 ETH (full pool, only winner)
+        assertEq(user2.balance, user2Before + 1.4 ether);
     }
 
     function test_WinnerBonus_MultipleWinners() public {
@@ -608,23 +606,22 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user1);
         staking.claim();
 
-        // Pool has 0.4 ETH, 3 remaining "potential winners" (non-winners don't decrement)
+        // Pool has 0.4 ETH, 2 remaining winners (loser decremented from 3 to 2)
         (uint256 poolETH,, uint256 remaining,,) = staking.getCohortInfo(cohort);
         assertEq(poolETH, 0.4 ether);
-        assertEq(remaining, 3); // All 3 stakers counted as potential winners
+        assertEq(remaining, 2);
 
-        // User2 claims first - gets 1/3 of pool (0.133 ETH)
+        // User2 claims first - gets 1/2 of pool (0.2 ETH)
         uint256 user2Before = user2.balance;
         vm.prank(user2);
         staking.claim();
-        assertEq(user2.balance, user2Before + 1 ether + 0.133333333333333333 ether);
+        assertEq(user2.balance, user2Before + 1.2 ether);
 
-        // User3 claims second - gets 1/2 of remaining pool (0.133 ETH)
+        // User3 claims second - gets remaining pool (0.2 ETH)
         uint256 user3Before = user3.balance;
         vm.prank(user3);
         staking.claim();
-        // Pool was 0.266... ETH, divided by 2 = 0.133 ETH
-        assertEq(user3.balance, user3Before + 1 ether + 0.133333333333333333 ether);
+        assertEq(user3.balance, user3Before + 1.2 ether);
     }
 
     function test_NoWinners_PoolSplitToTreasuryAndCharity() public {
@@ -762,7 +759,7 @@ contract ProofwellStakingV2Test is Test {
     }
 
     function test_Version() public view {
-        assertEq(staking.version(), "2.1.0");
+        assertEq(staking.version(), "2.2.0");
     }
 
     // ============ Constants Tests ============
@@ -827,8 +824,7 @@ contract ProofwellStakingV2Test is Test {
         vm.warp(block.timestamp + SECONDS_PER_DAY + 1);
 
         // Construct message hash the same way the contract does
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
 
         // Sign with P-256
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
@@ -848,8 +844,7 @@ contract ProofwellStakingV2Test is Test {
         vm.warp(block.timestamp + SECONDS_PER_DAY + 1);
 
         // Use wrong private key (2 instead of 1)
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
         (bytes32 r, bytes32 s) = vm.signP256(2, messageHash);
 
         vm.expectRevert(ProofwellStakingV2.InvalidSignature.selector);
@@ -867,8 +862,7 @@ contract ProofwellStakingV2Test is Test {
         vm.warp(block.timestamp + 2 * SECONDS_PER_DAY + 1);
 
         // Sign for day 0 but submit for day 1
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
 
         vm.expectRevert(ProofwellStakingV2.InvalidSignature.selector);
@@ -885,8 +879,7 @@ contract ProofwellStakingV2Test is Test {
         vm.warp(block.timestamp + SECONDS_PER_DAY + 1);
 
         // Sign with goalAchieved=false but submit with goalAchieved=true
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user1, uint256(0), false, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), false, block.chainid, address(staking)));
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
 
         vm.expectRevert(ProofwellStakingV2.InvalidSignature.selector);
@@ -903,8 +896,7 @@ contract ProofwellStakingV2Test is Test {
         vm.warp(block.timestamp + SECONDS_PER_DAY + 1);
 
         // Sign with user2's address encoded, but submit as user1
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user2, uint256(0), true, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user2, uint256(0), true, block.chainid, address(staking)));
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
 
         vm.expectRevert(ProofwellStakingV2.InvalidSignature.selector);
@@ -943,7 +935,8 @@ contract ProofwellStakingV2Test is Test {
 
         ProofwellStakingV2 impl = new ProofwellStakingV2();
         bytes memory initData = abi.encodeCall(ProofwellStakingV2.initialize, (treasury, charity, address(usdc)));
-        ProofwellStakingV2 stakingLocal = ProofwellStakingV2(payable(address(new ERC1967Proxy(address(impl), initData))));
+        ProofwellStakingV2 stakingLocal =
+            ProofwellStakingV2(payable(address(new ERC1967Proxy(address(impl), initData))));
 
         // Transfer ownership to revertOwner
         stakingLocal.transferOwnership(address(revertOwner));
@@ -1109,8 +1102,7 @@ contract ProofwellStakingV2Test is Test {
         // Warp to just before day 0 ends (less than SECONDS_PER_DAY after start)
         vm.warp(block.timestamp + SECONDS_PER_DAY - 1);
 
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
 
         vm.expectRevert(ProofwellStakingV2.ProofSubmissionWindowClosed.selector);
@@ -1128,8 +1120,7 @@ contract ProofwellStakingV2Test is Test {
         // Warp to exactly when day 0 ends
         vm.warp(startTime + SECONDS_PER_DAY);
 
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
 
         vm.prank(user1);
@@ -1148,8 +1139,7 @@ contract ProofwellStakingV2Test is Test {
         // Warp to exactly the end of grace period
         vm.warp(startTime + SECONDS_PER_DAY + GRACE_PERIOD);
 
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
 
         vm.prank(user1);
@@ -1168,8 +1158,7 @@ contract ProofwellStakingV2Test is Test {
         // Warp to 1 second after grace period ends
         vm.warp(startTime + SECONDS_PER_DAY + GRACE_PERIOD + 1);
 
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
 
         vm.expectRevert(ProofwellStakingV2.ProofSubmissionWindowClosed.selector);
@@ -1187,8 +1176,7 @@ contract ProofwellStakingV2Test is Test {
 
         vm.warp(block.timestamp + SECONDS_PER_DAY + 1);
 
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user1, uint256(0), false, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), false, block.chainid, address(staking)));
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
 
         // Normalize s to low-s form (required by some P256 implementations)
@@ -1213,8 +1201,7 @@ contract ProofwellStakingV2Test is Test {
 
         vm.warp(block.timestamp + SECONDS_PER_DAY + 1);
 
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
 
         vm.prank(user1);
@@ -1265,8 +1252,7 @@ contract ProofwellStakingV2Test is Test {
 
         vm.warp(block.timestamp + SECONDS_PER_DAY + 1);
 
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
 
         vm.prank(user1);
@@ -1326,9 +1312,9 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user2);
         staking.claim();
 
-        // User2 gets: 100 USDC (stake) + pool share
-        // Pool = 40% of 100 USDC = 40 USDC, divided by 2 remaining = 20 USDC bonus
-        assertEq(usdc.balanceOf(user2), user2Before + stakeAmount + 20e6);
+        // User2 gets: 100 USDC (stake) + full pool (loser decremented remaining to 1)
+        // Pool = 40% of 100 USDC = 40 USDC, divided by 1 remaining = 40 USDC bonus
+        assertEq(usdc.balanceOf(user2), user2Before + stakeAmount + 40e6);
     }
 
     function test_WinnerBonus_USDC_MultipleWinners() public {
@@ -1361,21 +1347,19 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user1);
         staking.claim();
 
-        // User2 claims - gets 40/3 = 13.333... USDC bonus
+        // User2 claims - gets 40/2 = 20 USDC bonus (loser decremented remaining to 2)
         uint256 user2Before = usdc.balanceOf(user2);
         vm.prank(user2);
         staking.claim();
         uint256 user2Bonus = usdc.balanceOf(user2) - user2Before - stakeAmount;
-        uint256 expectedBonus2 = uint256(40e6) / 3;
-        assertEq(user2Bonus, expectedBonus2);
+        assertEq(user2Bonus, 20e6);
 
-        // User3 claims - gets remaining pool / 2
+        // User3 claims - gets remaining pool / 1 = 20 USDC
         uint256 user3Before = usdc.balanceOf(user3);
         vm.prank(user3);
         staking.claim();
         uint256 user3Bonus = usdc.balanceOf(user3) - user3Before - stakeAmount;
-        uint256 expectedBonus3 = (uint256(40e6) - expectedBonus2) / 2;
-        assertEq(user3Bonus, expectedBonus3);
+        assertEq(user3Bonus, 20e6);
     }
 
     function test_NoWinners_USDC_PoolSplitToTreasuryAndCharity() public {
@@ -1467,8 +1451,7 @@ contract ProofwellStakingV2Test is Test {
 
         vm.warp(block.timestamp + SECONDS_PER_DAY + 1);
 
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
 
         vm.prank(user1);
@@ -1947,7 +1930,7 @@ contract ProofwellStakingV2Test is Test {
         address resolver = makeAddr("resolver");
 
         vm.expectEmit(true, true, false, true);
-        emit ProofwellStakingV2.ResolvedExpired(user1, resolver, 0, 1 ether);
+        emit ProofwellStakingV2.ResolvedExpired(user1, resolver, 0, 1 ether, 0, false);
 
         vm.prank(resolver);
         staking.resolveExpired(user1);
@@ -2014,6 +1997,172 @@ contract ProofwellStakingV2Test is Test {
 
         vm.expectRevert(ProofwellStakingV2.ResolutionBufferNotElapsed.selector);
         staking.resolveExpired(user1);
+    }
+
+    function test_ResolveExpired_RevertIf_Paused() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 7 days + 1);
+
+        staking.pause();
+
+        vm.expectRevert();
+        staking.resolveExpired(user1);
+    }
+
+    function test_ResolveExpired_SelfResolve() public {
+        // User forgot to claim, calls resolveExpired on themselves after buffer
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        _setSuccessfulDays(user1, 7);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 7 days + 1);
+
+        uint256 userBefore = user1.balance;
+
+        vm.prank(user1);
+        staking.resolveExpired(user1);
+
+        assertEq(user1.balance, userBefore + 1 ether);
+        assertTrue(staking.getStake(user1).claimed);
+    }
+
+    function test_ResolveExpired_WinnerGetsBonusFromLoserSlash() public {
+        // Loser claims normally, winner gets resolved with bonus from pool
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        vm.prank(user2);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X_2, TEST_PUB_KEY_Y_2);
+        _setSuccessfulDays(user2, 7);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        // Loser claims normally — builds pool
+        vm.prank(user1);
+        staking.claim();
+
+        // Warp past buffer, resolve winner
+        vm.warp(block.timestamp + 7 days + 1);
+
+        uint256 user2Before = user2.balance;
+        address resolver = makeAddr("resolver");
+        vm.prank(resolver);
+        staking.resolveExpired(user2);
+
+        // Winner gets: 1 ETH stake + 0.4 ETH bonus (full pool, only winner)
+        assertEq(user2.balance, user2Before + 1.4 ether);
+    }
+
+    function test_ResolveExpired_MixedClaimAndResolve_FullAccounting() public {
+        // 3 stakers: 1 loser claims, 1 loser resolved, 1 winner resolved
+        // Verify total distributed == total staked
+        address user3 = makeAddr("user3");
+        vm.deal(user3, 10 ether);
+
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+        vm.prank(user2);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X_2, TEST_PUB_KEY_Y_2);
+        vm.prank(user3);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X_3, TEST_PUB_KEY_Y_3);
+        _setSuccessfulDays(user3, 7); // Only user3 wins
+
+        uint256 cohort = staking.getCurrentWeek();
+
+        // Snapshot balances
+        uint256 treasuryBefore = treasury.balance;
+        uint256 charityBefore = charity.balance;
+        uint256 user3Before = user3.balance;
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        // Loser 1 claims normally
+        vm.prank(user1);
+        staking.claim();
+
+        // Warp past buffer
+        vm.warp(block.timestamp + 7 days + 1);
+
+        address resolver = makeAddr("resolver");
+
+        // Loser 2 resolved
+        vm.prank(resolver);
+        staking.resolveExpired(user2);
+
+        // Winner resolved
+        vm.prank(resolver);
+        staking.resolveExpired(user3);
+
+        // Verify cohort finalized
+        assertTrue(staking.cohortFinalized(cohort));
+        assertEq(staking.cohortTotalStakers(cohort), 0);
+
+        // Accounting: 3 ETH total staked
+        // 2 losers slashed: 2 ETH total
+        //   - 0.8 ETH to winner pool (40% each)
+        //   - 0.8 ETH to treasury (40% each)
+        //   - 0.4 ETH to charity (20% each)
+        // Winner gets: 1 ETH stake + 0.8 ETH pool = 1.8 ETH
+        // Treasury gets: 0.8 ETH
+        // Charity gets: 0.4 ETH
+        // Total out: 1.8 + 0.8 + 0.4 = 3.0 ETH ✓
+        assertEq(user3.balance, user3Before + 1.8 ether);
+        assertEq(treasury.balance, treasuryBefore + 0.8 ether);
+        assertEq(charity.balance, charityBefore + 0.4 ether);
+    }
+
+    function test_ResolveExpired_ETHTransferFails_FallbackToTreasury() public {
+        // Stake from a contract that rejects ETH
+        RevertingReceiver badReceiver = new RevertingReceiver();
+        vm.deal(address(badReceiver), 10 ether);
+
+        vm.prank(address(badReceiver));
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+        _setSuccessfulDays(address(badReceiver), 7); // Winner
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 7 days + 1);
+
+        uint256 treasuryBefore = treasury.balance;
+
+        // resolveExpired should NOT revert — falls back to treasury
+        address resolver = makeAddr("resolver");
+        vm.prank(resolver);
+        staking.resolveExpired(address(badReceiver));
+
+        // Funds went to treasury instead of reverting
+        assertEq(treasury.balance, treasuryBefore + 1 ether);
+        assertTrue(staking.getStake(address(badReceiver)).claimed);
+    }
+
+    function test_ResolveExpired_USDCTransferFails_FallbackToTreasury() public {
+        vm.startPrank(user1);
+        usdc.approve(address(staking), 100e6);
+        staking.stakeUSDC(100e6, 2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+        vm.stopPrank();
+
+        _setSuccessfulDays(user1, 7);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 7 days + 1);
+
+        // Mock USDC transfer to user1 to fail (simulating blacklist)
+        vm.mockCallRevert(address(usdc), abi.encodeWithSelector(usdc.transfer.selector, user1, 100e6), "blacklisted");
+
+        uint256 treasuryBefore = usdc.balanceOf(treasury);
+
+        address resolver = makeAddr("resolver");
+        vm.prank(resolver);
+        staking.resolveExpired(user1);
+
+        // Funds redirected to treasury
+        assertEq(usdc.balanceOf(treasury), treasuryBefore + 100e6);
+        assertTrue(staking.getStake(user1).claimed);
+    }
+
+    function test_Constants_IncludesResolutionBuffer() public view {
+        assertEq(staking.RESOLUTION_BUFFER(), 7 days);
     }
 }
 
