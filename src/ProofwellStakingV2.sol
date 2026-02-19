@@ -122,12 +122,18 @@ contract ProofwellStakingV2 is
     // Cohort tracking for winner redistribution
     mapping(uint256 => uint256) public cohortPoolETH; // weekNum => accumulated winner pool
     mapping(uint256 => uint256) public cohortPoolUSDC;
-    mapping(uint256 => uint256) public cohortRemainingWinners; // weekNum => unprocessed potential winners
-    mapping(uint256 => uint256) public cohortTotalStakers; // weekNum => total stakers in cohort
-    mapping(uint256 => bool) public cohortFinalized; // weekNum => all claims processed
+    mapping(uint256 => uint256) public cohortRemainingWinners; // DEPRECATED: use per-token mappings
+    mapping(uint256 => uint256) public cohortTotalStakers; // DEPRECATED: use per-token mappings
+    mapping(uint256 => bool) public cohortFinalized; // DEPRECATED: per-token finalization via pool zeroing
+
+    // Per-token cohort tracking (V2.3.0 — fixes mixed ETH/USDC pool unfairness)
+    mapping(uint256 => uint256) public cohortRemainingWinnersETH;
+    mapping(uint256 => uint256) public cohortRemainingWinnersUSDC;
+    mapping(uint256 => uint256) public cohortTotalStakersETH;
+    mapping(uint256 => uint256) public cohortTotalStakersUSDC;
 
     /// @dev Reserve storage slots for future upgrades
-    uint256[50] private __gap;
+    uint256[46] private __gap;
 
     // ============ Constructor ============
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -201,9 +207,9 @@ contract ProofwellStakingV2 is
         emit DistributionUpdated(_winnerPercent, _treasuryPercent, _charityPercent);
     }
 
-    /// @notice Emergency withdraw stuck funds (owner only)
+    /// @notice Emergency withdraw stuck funds (owner only, requires paused)
     /// @param token Address of token (address(0) for ETH)
-    function emergencyWithdraw(address token) external onlyOwner {
+    function emergencyWithdraw(address token) external onlyOwner whenPaused {
         uint256 amount;
         if (token == address(0)) {
             amount = address(this).balance;
@@ -251,8 +257,8 @@ contract ProofwellStakingV2 is
             cohortWeek: cohortWeek
         });
 
-        cohortTotalStakers[cohortWeek]++;
-        cohortRemainingWinners[cohortWeek]++;
+        cohortTotalStakersETH[cohortWeek]++;
+        cohortRemainingWinnersETH[cohortWeek]++;
 
         emit StakedETH(msg.sender, msg.value, goalSeconds, durationDays, block.timestamp, cohortWeek);
     }
@@ -293,8 +299,8 @@ contract ProofwellStakingV2 is
             cohortWeek: cohortWeek
         });
 
-        cohortTotalStakers[cohortWeek]++;
-        cohortRemainingWinners[cohortWeek]++;
+        cohortTotalStakersUSDC[cohortWeek]++;
+        cohortRemainingWinnersUSDC[cohortWeek]++;
 
         emit StakedUSDC(msg.sender, amount, goalSeconds, durationDays, block.timestamp, cohortWeek);
     }
@@ -387,7 +393,7 @@ contract ProofwellStakingV2 is
     // ============ Internal Functions ============
 
     /// @dev Shared claim logic for claim() and resolveExpired().
-    ///      Handles: mark claimed, slash distribution, winner bonus, cohort accounting.
+    ///      Handles: slash distribution, winner bonus, cohort accounting, state cleanup.
     ///      Does NOT transfer funds to the user — callers handle that differently.
     function _processClaim(address user)
         internal
@@ -396,11 +402,14 @@ contract ProofwellStakingV2 is
         Stake storage userStake = stakes[user];
         userStake.claimed = true;
 
+        // Cache all values before clearing state
         uint256 totalAmount = userStake.amount;
         uint256 successfulDays = userStake.successfulDays;
         uint256 durationDays = userStake.durationDays;
         uint256 cohort = userStake.cohortWeek;
         isUSDC = userStake.isUSDC;
+        bytes32 pubKeyX = userStake.pubKeyX;
+        bytes32 pubKeyY = userStake.pubKeyY;
 
         // Binary outcome: full refund or nothing
         bool isWinner = successfulDays == durationDays;
@@ -427,38 +436,58 @@ contract ProofwellStakingV2 is
             }
         }
 
-        // Losers decrement remaining winners so the pool divides by actual winners
-        if (!isWinner) {
-            if (cohortRemainingWinners[cohort] > 0) {
-                cohortRemainingWinners[cohort]--;
+        // Per-token cohort accounting
+        if (isUSDC) {
+            if (!isWinner && cohortRemainingWinnersUSDC[cohort] > 0) {
+                cohortRemainingWinnersUSDC[cohort]--;
             }
-        }
-
-        // If user is a winner, get share of current pool
-        if (isWinner) {
-            uint256 remainingWinners = cohortRemainingWinners[cohort];
-            if (remainingWinners > 0) {
-                uint256 pool = isUSDC ? cohortPoolUSDC[cohort] : cohortPoolETH[cohort];
-                if (pool > 0) {
-                    winnerBonus = pool / remainingWinners;
-                    if (isUSDC) {
+            if (isWinner) {
+                uint256 remainingWinners = cohortRemainingWinnersUSDC[cohort];
+                if (remainingWinners > 0) {
+                    uint256 pool = cohortPoolUSDC[cohort];
+                    if (pool > 0) {
+                        winnerBonus = pool / remainingWinners;
                         cohortPoolUSDC[cohort] -= winnerBonus;
-                    } else {
-                        cohortPoolETH[cohort] -= winnerBonus;
+                        amountReturned += winnerBonus;
+                        emit WinnerBonusPaid(user, winnerBonus, cohort, true);
                     }
-                    amountReturned += winnerBonus;
-
-                    emit WinnerBonusPaid(user, winnerBonus, cohort, isUSDC);
+                    cohortRemainingWinnersUSDC[cohort]--;
                 }
-                cohortRemainingWinners[cohort]--;
+            }
+            cohortTotalStakersUSDC[cohort]--;
+            if (cohortTotalStakersUSDC[cohort] == 0) {
+                _finalizeLeftoverPool(cohort, true);
+            }
+        } else {
+            if (!isWinner && cohortRemainingWinnersETH[cohort] > 0) {
+                cohortRemainingWinnersETH[cohort]--;
+            }
+            if (isWinner) {
+                uint256 remainingWinners = cohortRemainingWinnersETH[cohort];
+                if (remainingWinners > 0) {
+                    uint256 pool = cohortPoolETH[cohort];
+                    if (pool > 0) {
+                        winnerBonus = pool / remainingWinners;
+                        cohortPoolETH[cohort] -= winnerBonus;
+                        amountReturned += winnerBonus;
+                        emit WinnerBonusPaid(user, winnerBonus, cohort, false);
+                    }
+                    cohortRemainingWinnersETH[cohort]--;
+                }
+            }
+            cohortTotalStakersETH[cohort]--;
+            if (cohortTotalStakersETH[cohort] == 0) {
+                _finalizeLeftoverPool(cohort, false);
             }
         }
 
-        // Decrement cohort staker count and finalize if last
-        cohortTotalStakers[cohort]--;
-        if (cohortTotalStakers[cohort] == 0 && !cohortFinalized[cohort]) {
-            _finalizeLeftoverPool(cohort);
+        // Clear state for re-staking
+        bytes32 keyHash = keccak256(abi.encodePacked(pubKeyX, pubKeyY));
+        delete registeredKeys[keyHash];
+        for (uint256 i = 0; i < durationDays; i++) {
+            delete dayVerified[user][i];
         }
+        delete stakes[user];
     }
 
     function _validateAndRegisterKey(bytes32 pubKeyX, bytes32 pubKeyY) internal {
@@ -488,49 +517,34 @@ contract ProofwellStakingV2 is
         if (amount == 0) return true;
 
         if (isUSDC_) {
-            // solhint-disable-next-line no-empty-blocks
-            try IERC20(address(usdc)).transfer(to, amount) returns (bool success) {
-                return success;
-            } catch {
-                return false;
-            }
+            (bool success, bytes memory returndata) =
+                address(usdc).call(abi.encodeWithSelector(IERC20.transfer.selector, to, amount));
+            return success && (returndata.length == 0 || abi.decode(returndata, (bool)));
         } else {
             (bool success,) = to.call{value: amount}("");
             return success;
         }
     }
 
-    function _finalizeLeftoverPool(uint256 cohort) internal {
-        cohortFinalized[cohort] = true;
+    /// @dev Sweep leftover pool for a specific token type when all stakers of that type have claimed.
+    function _finalizeLeftoverPool(uint256 cohort, bool isUSDC_) internal {
+        uint256 leftover = isUSDC_ ? cohortPoolUSDC[cohort] : cohortPoolETH[cohort];
+        if (leftover == 0) return;
 
-        // If there's leftover in the pool (no winners claimed it), split between treasury and charity
-        uint256 leftoverETH = cohortPoolETH[cohort];
-        uint256 leftoverUSDC = cohortPoolUSDC[cohort];
+        uint256 toTreasury = (leftover * 67) / 100; // 67% to treasury
+        uint256 toCharity = leftover - toTreasury; // 33% to charity
 
-        if (leftoverETH > 0) {
-            uint256 toTreasury = (leftoverETH * 67) / 100; // 67% to treasury
-            uint256 toCharity = leftoverETH - toTreasury; // 33% to charity
-
+        if (isUSDC_) {
+            cohortPoolUSDC[cohort] = 0;
+        } else {
             cohortPoolETH[cohort] = 0;
-            _transferFunds(treasury, toTreasury, false);
-            _transferFunds(charity, toCharity, false);
-
-            if (toCharity > 0) {
-                emit CharityDonation(toCharity, cohort, false);
-            }
         }
 
-        if (leftoverUSDC > 0) {
-            uint256 toTreasury = (leftoverUSDC * 67) / 100;
-            uint256 toCharity = leftoverUSDC - toTreasury;
+        _transferFunds(treasury, toTreasury, isUSDC_);
+        _transferFunds(charity, toCharity, isUSDC_);
 
-            cohortPoolUSDC[cohort] = 0;
-            _transferFunds(treasury, toTreasury, true);
-            _transferFunds(charity, toCharity, true);
-
-            if (toCharity > 0) {
-                emit CharityDonation(toCharity, cohort, true);
-            }
+        if (toCharity > 0) {
+            emit CharityDonation(toCharity, cohort, isUSDC_);
         }
     }
 
@@ -584,18 +598,26 @@ contract ProofwellStakingV2 is
         return registeredKeys[keyHash];
     }
 
-    /// @notice Get cohort pool info
+    /// @notice Get cohort pool info (per-token tracking)
     function getCohortInfo(uint256 cohortWeek)
         external
         view
-        returns (uint256 poolETH, uint256 poolUSDC, uint256 remainingWinners, uint256 totalStakers, bool finalized)
+        returns (
+            uint256 poolETH,
+            uint256 poolUSDC,
+            uint256 remainingWinnersETH_,
+            uint256 remainingWinnersUSDC_,
+            uint256 totalStakersETH_,
+            uint256 totalStakersUSDC_
+        )
     {
         return (
             cohortPoolETH[cohortWeek],
             cohortPoolUSDC[cohortWeek],
-            cohortRemainingWinners[cohortWeek],
-            cohortTotalStakers[cohortWeek],
-            cohortFinalized[cohortWeek]
+            cohortRemainingWinnersETH[cohortWeek],
+            cohortRemainingWinnersUSDC[cohortWeek],
+            cohortTotalStakersETH[cohortWeek],
+            cohortTotalStakersUSDC[cohortWeek]
         );
     }
 
@@ -606,7 +628,7 @@ contract ProofwellStakingV2 is
 
     /// @notice Get contract version
     function version() external pure returns (string memory) {
-        return "2.2.0";
+        return "2.3.0";
     }
 
     // ============ UUPS ============

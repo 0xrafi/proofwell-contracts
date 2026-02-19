@@ -82,7 +82,7 @@ contract ProofwellStakingV2Test is Test {
         assertEq(staking.treasuryPercent(), 40);
         assertEq(staking.charityPercent(), 20);
         assertEq(staking.owner(), owner);
-        assertEq(staking.version(), "2.2.0");
+        assertEq(staking.version(), "2.3.0");
     }
 
     function test_Initialize_RevertIf_ZeroTreasury() public {
@@ -302,6 +302,8 @@ contract ProofwellStakingV2Test is Test {
         uint256 ownerBalanceBefore = owner.balance;
         uint256 contractBalance = address(staking).balance;
 
+        // Must pause first
+        staking.pause();
         staking.emergencyWithdraw(address(0));
 
         assertEq(owner.balance, ownerBalanceBefore + contractBalance);
@@ -318,6 +320,8 @@ contract ProofwellStakingV2Test is Test {
         uint256 ownerBalanceBefore = usdc.balanceOf(owner);
         uint256 contractBalance = usdc.balanceOf(address(staking));
 
+        staking.pause();
+
         vm.expectEmit(true, false, false, true);
         emit ProofwellStakingV2.EmergencyWithdraw(address(usdc), contractBalance);
 
@@ -325,6 +329,14 @@ contract ProofwellStakingV2Test is Test {
 
         assertEq(usdc.balanceOf(owner), ownerBalanceBefore + contractBalance);
         assertEq(usdc.balanceOf(address(staking)), 0);
+    }
+
+    function test_EmergencyWithdraw_RevertIf_NotPaused() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        vm.expectRevert();
+        staking.emergencyWithdraw(address(0));
     }
 
     // ============ Claim with Distribution Tests ============
@@ -532,16 +544,16 @@ contract ProofwellStakingV2Test is Test {
     function test_CohortTracking_IncrementOnStake() public {
         uint256 cohort = block.timestamp / 604800;
 
-        (,, uint256 remainingWinners, uint256 totalStakers,) = staking.getCohortInfo(cohort);
-        assertEq(remainingWinners, 0);
-        assertEq(totalStakers, 0);
+        (,, uint256 remainingWinnersETH,, uint256 totalStakersETH,) = staking.getCohortInfo(cohort);
+        assertEq(remainingWinnersETH, 0);
+        assertEq(totalStakersETH, 0);
 
         vm.prank(user1);
         staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
 
-        (,, remainingWinners, totalStakers,) = staking.getCohortInfo(cohort);
-        assertEq(remainingWinners, 1);
-        assertEq(totalStakers, 1);
+        (,, remainingWinnersETH,, totalStakersETH,) = staking.getCohortInfo(cohort);
+        assertEq(remainingWinnersETH, 1);
+        assertEq(totalStakersETH, 1);
     }
 
     function test_WinnerBonus_SingleWinner() public {
@@ -564,11 +576,10 @@ contract ProofwellStakingV2Test is Test {
         staking.claim();
 
         // Pool should have 0.4 ETH (40% of 1 ETH slashed)
-        // remainingWinners is 1 (loser decremented it from 2 to 1)
-        (uint256 poolETH,, uint256 remainingWinners,, bool finalized) = staking.getCohortInfo(cohort);
+        // remainingWinnersETH is 1 (loser decremented it from 2 to 1)
+        (uint256 poolETH,, uint256 remainingWinnersETH,,,) = staking.getCohortInfo(cohort);
         assertEq(poolETH, 0.4 ether);
-        assertEq(remainingWinners, 1);
-        assertFalse(finalized);
+        assertEq(remainingWinnersETH, 1);
 
         // User2 claims (winner, gets bonus)
         uint256 user2Before = user2.balance;
@@ -606,10 +617,10 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user1);
         staking.claim();
 
-        // Pool has 0.4 ETH, 2 remaining winners (loser decremented from 3 to 2)
-        (uint256 poolETH,, uint256 remaining,,) = staking.getCohortInfo(cohort);
+        // Pool has 0.4 ETH, 2 remaining ETH winners (loser decremented from 3 to 2)
+        (uint256 poolETH,, uint256 remainingETH,,,) = staking.getCohortInfo(cohort);
         assertEq(poolETH, 0.4 ether);
-        assertEq(remaining, 2);
+        assertEq(remainingETH, 2);
 
         // User2 claims first - gets 1/2 of pool (0.2 ETH)
         uint256 user2Before = user2.balance;
@@ -644,7 +655,7 @@ contract ProofwellStakingV2Test is Test {
         staking.claim();
 
         // Pool has 0.4 ETH from user1's slash
-        (uint256 poolAfterUser1,,,,) = staking.getCohortInfo(cohort);
+        (uint256 poolAfterUser1,,,,,) = staking.getCohortInfo(cohort);
         assertEq(poolAfterUser1, 0.4 ether);
 
         // User2 claims - binary payout means full 1 ETH slashed
@@ -653,9 +664,8 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user2);
         staking.claim();
 
-        // Pool should now be finalized since no stakers left
-        (uint256 poolFinal,,,, bool finalized) = staking.getCohortInfo(cohort);
-        assertTrue(finalized);
+        // Pool should now be drained since no ETH stakers left
+        (uint256 poolFinal,,,,,) = staking.getCohortInfo(cohort);
         assertEq(poolFinal, 0); // Pool drained to treasury/charity
     }
 
@@ -699,14 +709,15 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user1);
         staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
 
-        (uint256 poolETH, uint256 poolUSDC, uint256 remaining, uint256 total, bool finalized) =
+        (uint256 poolETH, uint256 poolUSDC, uint256 remainingETH, uint256 remainingUSDC, uint256 totalETH, uint256 totalUSDC) =
             staking.getCohortInfo(cohort);
 
         assertEq(poolETH, 0);
         assertEq(poolUSDC, 0);
-        assertEq(remaining, 1);
-        assertEq(total, 1);
-        assertFalse(finalized);
+        assertEq(remainingETH, 1);
+        assertEq(remainingUSDC, 0);
+        assertEq(totalETH, 1);
+        assertEq(totalUSDC, 0);
     }
 
     // ============ Ownership Tests ============
@@ -759,7 +770,7 @@ contract ProofwellStakingV2Test is Test {
     }
 
     function test_Version() public view {
-        assertEq(staking.version(), "2.2.0");
+        assertEq(staking.version(), "2.3.0");
     }
 
     // ============ Constants Tests ============
@@ -944,6 +955,9 @@ contract ProofwellStakingV2Test is Test {
         // Instead, send ETH to the contract and mock the owner call to fail
         vm.deal(address(stakingLocal), 1 ether);
 
+        // Must pause first
+        stakingLocal.pause();
+
         // Mock the owner's call to revert by setting owner to a contract that reverts
         // Simpler approach: use vm.mockCall to make the ETH transfer fail
         vm.mockCallRevert(address(this), bytes(""), bytes("transfer failed"));
@@ -1024,6 +1038,7 @@ contract ProofwellStakingV2Test is Test {
     }
 
     function test_EmergencyWithdraw_RevertIf_NotOwner() public {
+        staking.pause();
         vm.expectRevert();
         vm.prank(user1);
         staking.emergencyWithdraw(address(0));
@@ -1219,7 +1234,7 @@ contract ProofwellStakingV2Test is Test {
         staking.submitDayProof(0, true, bytes32(0), bytes32(0));
     }
 
-    function test_SubmitDayProof_RevertIf_AlreadyClaimed() public {
+    function test_SubmitDayProof_RevertIf_AfterClaim() public {
         vm.prank(user1);
         staking.stakeETH{value: 1 ether}(2 hours, 3, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
 
@@ -1228,7 +1243,8 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user1);
         staking.claim();
 
-        vm.expectRevert(ProofwellStakingV2.StakeAlreadyClaimed.selector);
+        // Stake is deleted after claim
+        vm.expectRevert(ProofwellStakingV2.NoStakeFound.selector);
         vm.prank(user1);
         staking.submitDayProof(0, true, bytes32(0), bytes32(0));
     }
@@ -1421,7 +1437,7 @@ contract ProofwellStakingV2Test is Test {
         assertEq(reason, "No stake found");
     }
 
-    function test_CanSubmitProof_AlreadyClaimed_ReturnsFalse() public {
+    function test_CanSubmitProof_AfterClaim_ReturnsFalse() public {
         vm.prank(user1);
         staking.stakeETH{value: 1 ether}(2 hours, 3, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
 
@@ -1429,9 +1445,10 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user1);
         staking.claim();
 
+        // Stake is deleted after claim, so "No stake found"
         (bool canSubmit, string memory reason) = staking.canSubmitProof(user1, 0);
         assertFalse(canSubmit);
-        assertEq(reason, "Stake already claimed");
+        assertEq(reason, "No stake found");
     }
 
     function test_CanSubmitProof_InvalidDayIndex_ReturnsFalse() public {
@@ -1703,20 +1720,24 @@ contract ProofwellStakingV2Test is Test {
 
         vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
 
+        uint256 treasuryETHBefore = treasury.balance;
+        uint256 charityETHBefore = charity.balance;
+
+        // ETH loser claims — ETH pool finalizes immediately (only ETH staker)
         vm.prank(user1);
         staking.claim();
 
-        uint256 treasuryETHBefore = treasury.balance;
-        uint256 charityETHBefore = charity.balance;
+        // ETH pool already finalized
+        assertTrue(treasury.balance > treasuryETHBefore);
+        assertTrue(charity.balance > charityETHBefore);
+
         uint256 treasuryUSDCBefore = usdc.balanceOf(treasury);
         uint256 charityUSDCBefore = usdc.balanceOf(charity);
 
+        // USDC loser claims — USDC pool finalizes
         vm.prank(user2);
         staking.claim();
 
-        // Both ETH and USDC pools finalized
-        assertTrue(treasury.balance > treasuryETHBefore);
-        assertTrue(charity.balance > charityETHBefore);
         assertTrue(usdc.balanceOf(treasury) > treasuryUSDCBefore);
         assertTrue(usdc.balanceOf(charity) > charityUSDCBefore);
     }
@@ -1746,7 +1767,8 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user1);
         staking.claim();
 
-        vm.expectRevert(ProofwellStakingV2.StakeAlreadyClaimed.selector);
+        // Stake is deleted after claim
+        vm.expectRevert(ProofwellStakingV2.NoStakeFound.selector);
         vm.prank(user1);
         staking.claim();
     }
@@ -1861,9 +1883,9 @@ contract ProofwellStakingV2Test is Test {
         assertEq(treasury.balance, treasuryBefore + 0.668 ether);
         assertEq(charity.balance, charityBefore + 0.332 ether);
 
-        // Stake marked as claimed
+        // Stake deleted after resolve
         ProofwellStakingV2.Stake memory s = staking.getStake(user1);
-        assertTrue(s.claimed);
+        assertEq(s.amount, 0);
     }
 
     function test_ResolveExpired_AfterBuffer_WinnerETH() public {
@@ -1903,14 +1925,14 @@ contract ProofwellStakingV2Test is Test {
 
         vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
 
-        // User self-claims
+        // User self-claims (stake is deleted)
         vm.prank(user1);
         staking.claim();
 
         // Resolver tries after buffer
         vm.warp(block.timestamp + 7 days + 1);
 
-        vm.expectRevert(ProofwellStakingV2.StakeAlreadyClaimed.selector);
+        vm.expectRevert(ProofwellStakingV2.NoStakeFound.selector);
         staking.resolveExpired(user1);
     }
 
@@ -1951,19 +1973,18 @@ contract ProofwellStakingV2Test is Test {
         // user1 self-claims (loser), cohort not finalized yet
         vm.prank(user1);
         staking.claim();
-        assertFalse(staking.cohortFinalized(cohort));
-        assertEq(staking.cohortTotalStakers(cohort), 1);
+        assertEq(staking.cohortTotalStakersETH(cohort), 1);
 
         // Warp past buffer for resolve
         vm.warp(block.timestamp + 7 days + 1);
 
-        // Resolve user2 — should finalize cohort
+        // Resolve user2 — should finalize cohort (pool swept)
         address resolver = makeAddr("resolver");
         vm.prank(resolver);
         staking.resolveExpired(user2);
 
-        assertTrue(staking.cohortFinalized(cohort));
-        assertEq(staking.cohortTotalStakers(cohort), 0);
+        assertEq(staking.cohortTotalStakersETH(cohort), 0);
+        assertEq(staking.cohortPoolETH(cohort), 0); // Pool swept
     }
 
     function test_ResolveExpired_USDC() public {
@@ -2026,7 +2047,7 @@ contract ProofwellStakingV2Test is Test {
         staking.resolveExpired(user1);
 
         assertEq(user1.balance, userBefore + 1 ether);
-        assertTrue(staking.getStake(user1).claimed);
+        assertEq(staking.getStake(user1).amount, 0); // Stake deleted
     }
 
     function test_ResolveExpired_WinnerGetsBonusFromLoserSlash() public {
@@ -2096,9 +2117,9 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(resolver);
         staking.resolveExpired(user3);
 
-        // Verify cohort finalized
-        assertTrue(staking.cohortFinalized(cohort));
-        assertEq(staking.cohortTotalStakers(cohort), 0);
+        // Verify cohort finalized (all ETH stakers resolved)
+        assertEq(staking.cohortTotalStakersETH(cohort), 0);
+        assertEq(staking.cohortPoolETH(cohort), 0);
 
         // Accounting: 3 ETH total staked
         // 2 losers slashed: 2 ETH total
@@ -2134,7 +2155,7 @@ contract ProofwellStakingV2Test is Test {
 
         // Funds went to treasury instead of reverting
         assertEq(treasury.balance, treasuryBefore + 1 ether);
-        assertTrue(staking.getStake(address(badReceiver)).claimed);
+        assertEq(staking.getStake(address(badReceiver)).amount, 0); // Stake deleted
     }
 
     function test_ResolveExpired_USDCTransferFails_FallbackToTreasury() public {
@@ -2158,11 +2179,136 @@ contract ProofwellStakingV2Test is Test {
 
         // Funds redirected to treasury
         assertEq(usdc.balanceOf(treasury), treasuryBefore + 100e6);
-        assertTrue(staking.getStake(user1).claimed);
+        assertEq(staking.getStake(user1).amount, 0); // Stake deleted
     }
 
     function test_Constants_IncludesResolutionBuffer() public view {
         assertEq(staking.RESOLUTION_BUFFER(), 7 days);
+    }
+
+    // ============ Re-staking Tests ============
+
+    function test_ReStake_ETH_AfterClaim() public {
+        // First stake
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        _setSuccessfulDays(user1, 7);
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        vm.prank(user1);
+        staking.claim();
+
+        // Stake should be deleted
+        assertEq(staking.getStake(user1).amount, 0);
+
+        // Key should be deregistered
+        assertEq(staking.getKeyOwner(TEST_PUB_KEY_X, TEST_PUB_KEY_Y), address(0));
+
+        // Re-stake with same key
+        vm.prank(user1);
+        staking.stakeETH{value: 0.5 ether}(3 hours, 5, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        ProofwellStakingV2.Stake memory s = staking.getStake(user1);
+        assertEq(s.amount, 0.5 ether);
+        assertEq(s.goalSeconds, 3 hours);
+        assertEq(s.durationDays, 5);
+    }
+
+    function test_ReStake_USDC_AfterClaim() public {
+        // First stake
+        vm.startPrank(user1);
+        usdc.approve(address(staking), 100e6);
+        staking.stakeUSDC(100e6, 2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+        vm.stopPrank();
+
+        _setSuccessfulDays(user1, 7);
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        vm.prank(user1);
+        staking.claim();
+
+        // Re-stake with same key and different token
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(4 hours, 10, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        ProofwellStakingV2.Stake memory s = staking.getStake(user1);
+        assertEq(s.amount, 1 ether);
+        assertFalse(s.isUSDC);
+    }
+
+    function test_ReStake_AfterResolveExpired() public {
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 7 days + 1);
+
+        address resolver = makeAddr("resolver");
+        vm.prank(resolver);
+        staking.resolveExpired(user1);
+
+        // Re-stake with same key
+        vm.prank(user1);
+        staking.stakeETH{value: 0.5 ether}(2 hours, 3, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        assertEq(staking.getStake(user1).amount, 0.5 ether);
+    }
+
+    function test_ReStake_DayVerifiedCleared() public {
+        uint256 privateKey = 1;
+
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 3, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+
+        // Submit proof for day 0
+        vm.warp(block.timestamp + SECONDS_PER_DAY + 1);
+        bytes32 messageHash = keccak256(abi.encodePacked(user1, uint256(0), true, block.chainid, address(staking)));
+        (bytes32 r, bytes32 s) = vm.signP256(privateKey, messageHash);
+        vm.prank(user1);
+        staking.submitDayProof(0, true, r, s);
+
+        assertTrue(staking.dayVerified(user1, 0));
+
+        // Complete and claim
+        _setSuccessfulDays(user1, 3);
+        vm.warp(block.timestamp + 3 * SECONDS_PER_DAY);
+        vm.prank(user1);
+        staking.claim();
+
+        // dayVerified should be cleared
+        assertFalse(staking.dayVerified(user1, 0));
+    }
+
+    // ============ Mixed ETH/USDC Cohort Fairness Tests ============
+
+    function test_MixedCohort_ETHWinnerDoesNotGetUSDCPool() public {
+        // ETH winner and USDC loser in same cohort
+        vm.prank(user1);
+        staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
+        _setSuccessfulDays(user1, 7);
+
+        vm.startPrank(user2);
+        usdc.approve(address(staking), 100e6);
+        staking.stakeUSDC(100e6, 2 hours, 7, TEST_PUB_KEY_X_2, TEST_PUB_KEY_Y_2);
+        vm.stopPrank();
+        // user2 is a USDC loser (0 days)
+
+        vm.warp(block.timestamp + 7 * SECONDS_PER_DAY + 1);
+
+        // USDC loser claims — builds USDC pool
+        vm.prank(user2);
+        staking.claim();
+
+        // ETH winner claims — should NOT receive USDC bonus
+        uint256 user1USDCBefore = usdc.balanceOf(user1);
+        uint256 user1ETHBefore = user1.balance;
+
+        vm.prank(user1);
+        staking.claim();
+
+        // Gets full ETH stake back, no USDC bonus, no ETH bonus (no ETH losers)
+        assertEq(user1.balance, user1ETHBefore + 1 ether);
+        assertEq(usdc.balanceOf(user1), user1USDCBefore);
     }
 }
 
@@ -2270,8 +2416,9 @@ contract ProofwellStakingV2IntegrationTest is Test {
             vm.prank(users[i]);
             staking.claim();
 
+            // Stake is deleted after claim
             ProofwellStakingV2.Stake memory stake = staking.getStake(users[i]);
-            assertTrue(stake.claimed);
+            assertEq(stake.amount, 0);
 
             console.log("User", i, "ETH balance change:", users[i].balance - balanceBefore);
             console.log("User", i, "USDC balance change:", usdc.balanceOf(users[i]) - usdcBefore);
