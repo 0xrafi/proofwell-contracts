@@ -627,7 +627,7 @@ contract ProofwellStakingV2 is
     }
 
     /// @notice Get contract version
-    function version() external pure returns (string memory) {
+    function version() external pure virtual returns (string memory) {
         return "2.3.0";
     }
 
