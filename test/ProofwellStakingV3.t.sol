@@ -56,9 +56,8 @@ contract ProofwellStakingV3Test is Test {
 
         // Upgrade to V3
         ProofwellStakingV3 v3Impl = new ProofwellStakingV3();
-        ProofwellStakingV2(payable(address(proxy))).upgradeToAndCall(
-            address(v3Impl), abi.encodeCall(ProofwellStakingV3.initializeV3, ())
-        );
+        ProofwellStakingV2(payable(address(proxy)))
+            .upgradeToAndCall(address(v3Impl), abi.encodeCall(ProofwellStakingV3.initializeV3, ()));
 
         staking = ProofwellStakingV3(payable(address(proxy)));
 
