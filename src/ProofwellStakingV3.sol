@@ -125,13 +125,12 @@ contract ProofwellStakingV3 is ProofwellStakingV2 {
 
     /// @notice Stake USDC with multi-stake support
     /// @return stakeId The assigned stake ID
-    function stakeUSDCV3(
-        uint256 amount,
-        uint256 goalSeconds,
-        uint256 durationDays,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) external nonReentrant whenNotPaused returns (uint256 stakeId) {
+    function stakeUSDCV3(uint256 amount, uint256 goalSeconds, uint256 durationDays, bytes32 pubKeyX, bytes32 pubKeyY)
+        external
+        nonReentrant
+        whenNotPaused
+        returns (uint256 stakeId)
+    {
         if (activeStakeCount[msg.sender] >= MAX_ACTIVE_STAKES) revert TooManyActiveStakes();
         if (goalSeconds == 0 || goalSeconds > MAX_GOAL_SECONDS) revert InvalidGoal();
         if (durationDays < MIN_DURATION_DAYS || durationDays > MAX_DURATION_DAYS) revert InvalidDuration();

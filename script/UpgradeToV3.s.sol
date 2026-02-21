@@ -24,10 +24,7 @@ contract UpgradeToV3Script is Script {
         console.log("V3 implementation deployed to:", address(v3Impl));
 
         // 2. Upgrade proxy + initialize V3
-        current.upgradeToAndCall(
-            address(v3Impl),
-            abi.encodeCall(ProofwellStakingV3.initializeV3, ())
-        );
+        current.upgradeToAndCall(address(v3Impl), abi.encodeCall(ProofwellStakingV3.initializeV3, ()));
 
         vm.stopBroadcast();
 
@@ -40,10 +37,7 @@ contract UpgradeToV3Script is Script {
         console.log("  Treasury:", upgraded.treasury());
         console.log("  MAX_ACTIVE_STAKES:", upgraded.MAX_ACTIVE_STAKES());
 
-        require(
-            keccak256(bytes(upgraded.version())) == keccak256(bytes("3.0.0")),
-            "Version mismatch after upgrade"
-        );
+        require(keccak256(bytes(upgraded.version())) == keccak256(bytes("3.0.0")), "Version mismatch after upgrade");
         console.log("");
         console.log("Upgrade to V3 successful!");
     }

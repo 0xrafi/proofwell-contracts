@@ -411,9 +411,7 @@ contract ProofwellStakingV3Test is Test {
         usdc.approve(address(staking), 10e6);
 
         vm.expectEmit(true, true, false, true);
-        emit ProofwellStakingV3.StakedUSDCV3(
-            user1, 0, 10e6, 3600, 7, block.timestamp, block.timestamp / 604800
-        );
+        emit ProofwellStakingV3.StakedUSDCV3(user1, 0, 10e6, 3600, 7, block.timestamp, block.timestamp / 604800);
         staking.stakeUSDCV3(10e6, 3600, 7, PK_X1, PK_Y1);
         vm.stopPrank();
     }
@@ -422,9 +420,7 @@ contract ProofwellStakingV3Test is Test {
         vm.prank(user1);
 
         vm.expectEmit(true, true, false, true);
-        emit ProofwellStakingV3.StakedETHV3(
-            user1, 0, 0.01 ether, 3600, 7, block.timestamp, block.timestamp / 604800
-        );
+        emit ProofwellStakingV3.StakedETHV3(user1, 0, 0.01 ether, 3600, 7, block.timestamp, block.timestamp / 604800);
         staking.stakeETHV3{value: 0.01 ether}(3600, 7, PK_X1, PK_Y1);
     }
 

@@ -709,8 +709,14 @@ contract ProofwellStakingV2Test is Test {
         vm.prank(user1);
         staking.stakeETH{value: 1 ether}(2 hours, 7, TEST_PUB_KEY_X, TEST_PUB_KEY_Y);
 
-        (uint256 poolETH, uint256 poolUSDC, uint256 remainingETH, uint256 remainingUSDC, uint256 totalETH, uint256 totalUSDC) =
-            staking.getCohortInfo(cohort);
+        (
+            uint256 poolETH,
+            uint256 poolUSDC,
+            uint256 remainingETH,
+            uint256 remainingUSDC,
+            uint256 totalETH,
+            uint256 totalUSDC
+        ) = staking.getCohortInfo(cohort);
 
         assertEq(poolETH, 0);
         assertEq(poolUSDC, 0);
