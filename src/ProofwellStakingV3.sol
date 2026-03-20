@@ -391,7 +391,7 @@ contract ProofwellStakingV3 is ProofwellStakingV2 {
     // ============ Version Override ============
 
     /// @notice Get contract version
-    function version() external pure override returns (string memory) {
+    function version() external pure virtual override returns (string memory) {
         return "3.0.0";
     }
 }
